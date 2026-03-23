@@ -1,0 +1,16 @@
+{
+  "name": "my-export-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "export": "wrangler deploy"
+  },
+  "dependencies": {
+    "export-runtime": "^0.0.1"
+  },
+  "devDependencies": {
+    "wrangler": "^3.93.0"
+  }
+}

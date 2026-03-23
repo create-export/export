@@ -1,0 +1,36 @@
+{
+  "name": "create-export",
+  "version": "0.0.1",
+  "description": "Cloudflare Workers ESM Export Framework",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "esm",
+    "rpc",
+    "websocket"
+  ],
+  "homepage": "https://github.com/ihasq/export#readme",
+  "bugs": {
+    "url": "https://github.com/ihasq/export/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ihasq/export.git",
+    "directory": "packages/create-export"
+  },
+  "license": "MIT",
+  "author": "ihasq",
+  "type": "module",
+  "bin": {
+    "create-export": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "template-typescript",
+    "template-javascript"
+  ],
+  "dependencies": {
+    "@clack/prompts": "^0.8.2",
+    "mri": "^1.2.0"
+  }
+}

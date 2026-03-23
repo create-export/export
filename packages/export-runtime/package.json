@@ -1,0 +1,33 @@
+{
+  "name": "export-runtime",
+  "version": "0.0.1",
+  "description": "Cloudflare Workers ESM Export Framework Runtime",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "esm",
+    "rpc",
+    "websocket"
+  ],
+  "homepage": "https://github.com/ihasq/export#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ihasq/export.git",
+    "directory": "packages/export-runtime"
+  },
+  "license": "MIT",
+  "author": "ihasq",
+  "type": "module",
+  "main": "./entry.js",
+  "exports": {
+    ".": "./entry.js"
+  },
+  "files": [
+    "entry.js",
+    "handler.js",
+    "client.js"
+  ],
+  "dependencies": {
+    "devalue": "^5.1.1"
+  }
+}

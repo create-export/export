@@ -1,23 +1,15 @@
 {
-  "name": "create-export",
-  "version": "0.0.0",
-  "description": "npm create export",
-  "keywords": [
-    "export"
-  ],
+  "private": true,
+  "name": "export-monorepo",
+  "description": "Cloudflare Workers ESM Export Framework",
   "homepage": "https://github.com/ihasq/export#readme",
-  "bugs": {
-    "url": "https://github.com/ihasq/export/issues"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ihasq/export.git"
   },
   "license": "MIT",
   "author": "ihasq",
-  "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  }
+  "workspaces": [
+    "packages/*"
+  ]
 }
