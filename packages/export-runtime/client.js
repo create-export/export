@@ -168,6 +168,15 @@ const ready = new Promise((resolve, reject) => {
   ws.onerror = (e) => reject(e);
 });
 
+const sendRequest = async (msg) => {
+  await ready;
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    ws.send(stringify({ ...msg, id }));
+  });
+};
+
 ws.onmessage = (event) => {
   const msg = parse(event.data);
   const resolver = pending.get(msg.id);
@@ -179,24 +188,16 @@ ws.onmessage = (event) => {
   } else if (msg.type === "result") {
     if (msg.valueType === "function") {
       resolver.resolve(createProxy(msg.path));
+    } else if (msg.valueType === "instance") {
+      resolver.resolve(createInstanceProxy(msg.instanceId));
     } else if (msg.valueType === "asynciterator") {
       const iteratorProxy = {
         [Symbol.asyncIterator]() { return this; },
         async next() {
-          await ready;
-          const id = nextId++;
-          return new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
-            ws.send(stringify({ type: "iterate-next", id, iteratorId: msg.iteratorId }));
-          });
+          return sendRequest({ type: "iterate-next", iteratorId: msg.iteratorId });
         },
         async return(value) {
-          await ready;
-          const id = nextId++;
-          return new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
-            ws.send(stringify({ type: "iterate-return", id, iteratorId: msg.iteratorId, value }));
-          });
+          return sendRequest({ type: "iterate-return", iteratorId: msg.iteratorId, value });
         }
       };
       resolver.resolve(iteratorProxy);
@@ -210,18 +211,41 @@ ws.onmessage = (event) => {
   }
 };
 
+// Proxy for remote class instances
+const createInstanceProxy = (instanceId, path = []) => {
+  const proxy = new Proxy(function(){}, {
+    get(_, prop) {
+      if (prop === "then" || prop === Symbol.toStringTag) return undefined;
+      if (prop === Symbol.dispose || prop === Symbol.asyncDispose) {
+        return () => sendRequest({ type: "release", instanceId });
+      }
+      if (prop === "[release]") {
+        return () => sendRequest({ type: "release", instanceId });
+      }
+      return createInstanceProxy(instanceId, [...path, prop]);
+    },
+    set(_, prop, value) {
+      sendRequest({ type: "set", instanceId, path: [...path, prop], args: [value] });
+      return true;
+    },
+    async apply(_, __, args) {
+      return sendRequest({ type: "call", instanceId, path, args });
+    }
+  });
+  return proxy;
+};
+
+// Proxy for exports (functions, classes, objects)
 const createProxy = (path = []) => new Proxy(function(){}, {
   get(_, prop) {
     if (prop === "then" || prop === Symbol.toStringTag) return undefined;
     return createProxy([...path, prop]);
   },
   async apply(_, __, args) {
-    await ready;
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      ws.send(stringify({ type: "call", id, path, args }));
-    });
+    return sendRequest({ type: "call", path, args });
+  },
+  construct(_, args) {
+    return sendRequest({ type: "construct", path, args });
   }
 });
 

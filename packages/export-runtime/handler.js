@@ -13,10 +13,15 @@ const getByPath = (obj, path) => {
 const isAsyncIterable = (value) =>
   value != null && typeof value[Symbol.asyncIterator] === "function";
 
+const isClass = (fn) =>
+  typeof fn === "function" && /^class\s/.test(Function.prototype.toString.call(fn));
+
 export const createHandler = (exports) => {
   const exportKeys = Object.keys(exports);
   const iteratorStore = new Map();
+  const instanceStore = new Map();
   let nextIteratorId = 1;
+  let nextInstanceId = 1;
 
   const send = (ws, data) => {
     ws.send(stringify(data));
@@ -36,16 +41,50 @@ export const createHandler = (exports) => {
         server.addEventListener("message", async (event) => {
           try {
             const msg = parse(event.data);
-            const { type, id, path = [], args = [], iteratorId } = msg;
+            const { type, id, path = [], args = [], iteratorId, instanceId } = msg;
 
-            if (type === "call") {
+            if (type === "construct") {
+              // Class instantiation
               try {
-                const fn = getByPath(exports, path);
-                if (typeof fn !== "function") {
+                const Ctor = getByPath(exports, path);
+                if (!isClass(Ctor)) {
+                  send(server, { type: "error", id, error: `${path.join(".")} is not a class` });
+                  return;
+                }
+                const instance = new Ctor(...args);
+                const instId = nextInstanceId++;
+                instanceStore.set(instId, instance);
+                send(server, { type: "result", id, instanceId: instId, valueType: "instance" });
+              } catch (err) {
+                send(server, { type: "error", id, error: String(err) });
+              }
+            } else if (type === "call") {
+              try {
+                let target;
+                let thisArg;
+
+                if (instanceId !== undefined) {
+                  // Method call on instance
+                  const instance = instanceStore.get(instanceId);
+                  if (!instance) {
+                    send(server, { type: "error", id, error: "Instance not found" });
+                    return;
+                  }
+                  target = getByPath(instance, path);
+                  thisArg = path.length > 1 ? getByPath(instance, path.slice(0, -1)) : instance;
+                } else {
+                  // Regular function call
+                  target = getByPath(exports, path);
+                  thisArg = path.length > 1 ? getByPath(exports, path.slice(0, -1)) : undefined;
+                }
+
+                if (typeof target !== "function") {
                   send(server, { type: "error", id, error: `${path.join(".")} is not a function` });
                   return;
                 }
-                const result = await fn.apply(undefined, args);
+
+                // Await result to support both sync and async functions
+                const result = await target.apply(thisArg, args);
 
                 if (isAsyncIterable(result)) {
                   const iterId = nextIteratorId++;
@@ -59,6 +98,42 @@ export const createHandler = (exports) => {
               } catch (err) {
                 send(server, { type: "error", id, error: String(err) });
               }
+            } else if (type === "get") {
+              // Property access on instance
+              try {
+                const instance = instanceStore.get(instanceId);
+                if (!instance) {
+                  send(server, { type: "error", id, error: "Instance not found" });
+                  return;
+                }
+                const value = getByPath(instance, path);
+                if (typeof value === "function") {
+                  send(server, { type: "result", id, valueType: "function" });
+                } else {
+                  send(server, { type: "result", id, value });
+                }
+              } catch (err) {
+                send(server, { type: "error", id, error: String(err) });
+              }
+            } else if (type === "set") {
+              // Property assignment on instance
+              try {
+                const instance = instanceStore.get(instanceId);
+                if (!instance) {
+                  send(server, { type: "error", id, error: "Instance not found" });
+                  return;
+                }
+                const parent = path.length > 1 ? getByPath(instance, path.slice(0, -1)) : instance;
+                const prop = path[path.length - 1];
+                parent[prop] = args[0];
+                send(server, { type: "result", id, value: true });
+              } catch (err) {
+                send(server, { type: "error", id, error: String(err) });
+              }
+            } else if (type === "release") {
+              // Release instance
+              instanceStore.delete(instanceId);
+              send(server, { type: "result", id, value: true });
             } else if (type === "iterate-next") {
               const iter = iteratorStore.get(iteratorId);
               if (!iter) {
@@ -85,6 +160,7 @@ export const createHandler = (exports) => {
 
         server.addEventListener("close", () => {
           iteratorStore.clear();
+          instanceStore.clear();
         });
 
         return new Response(null, { status: 101, webSocket: client });
