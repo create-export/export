@@ -19,6 +19,78 @@ const isReadableStream = (value) =>
 const isClass = (fn) =>
   typeof fn === "function" && /^class\s/.test(Function.prototype.toString.call(fn));
 
+// Generate TypeScript type definitions from exports
+const generateTypeDefinitions = (exports, exportKeys) => {
+  const lines = [
+    "// Auto-generated type definitions",
+    "// All functions are async over the network",
+    "",
+  ];
+
+  const generateType = (value, name, indent = "") => {
+    if (isClass(value)) {
+      // Extract class method names
+      const proto = value.prototype;
+      const methodNames = Object.getOwnPropertyNames(proto).filter(
+        (n) => n !== "constructor" && typeof proto[n] === "function"
+      );
+
+      lines.push(`${indent}export declare class ${name} {`);
+      lines.push(`${indent}  constructor(...args: any[]);`);
+      for (const method of methodNames) {
+        lines.push(`${indent}  ${method}(...args: any[]): Promise<any>;`);
+      }
+      lines.push(`${indent}  [Symbol.dispose](): Promise<void>;`);
+      lines.push(`${indent}  "[release]"(): Promise<void>;`);
+      lines.push(`${indent}}`);
+    } else if (typeof value === "function") {
+      // Check if it's an async generator
+      const fnStr = Function.prototype.toString.call(value);
+      if (fnStr.startsWith("async function*") || fnStr.includes("async *")) {
+        lines.push(
+          `${indent}export declare function ${name}(...args: any[]): Promise<AsyncIterable<any>>;`
+        );
+      } else if (fnStr.includes("ReadableStream")) {
+        lines.push(
+          `${indent}export declare function ${name}(...args: any[]): Promise<ReadableStream<any>>;`
+        );
+      } else {
+        lines.push(
+          `${indent}export declare function ${name}(...args: any[]): Promise<any>;`
+        );
+      }
+    } else if (typeof value === "object" && value !== null) {
+      // Nested object with methods
+      const keys = Object.keys(value);
+      lines.push(`${indent}export declare const ${name}: {`);
+      for (const key of keys) {
+        const v = value[key];
+        if (typeof v === "function") {
+          lines.push(`${indent}  ${key}(...args: any[]): Promise<any>;`);
+        } else {
+          lines.push(`${indent}  ${key}: any;`);
+        }
+      }
+      lines.push(`${indent}};`);
+    } else {
+      lines.push(`${indent}export declare const ${name}: any;`);
+    }
+  };
+
+  for (const key of exportKeys) {
+    generateType(exports[key], key);
+    lines.push("");
+  }
+
+  // Add createUploadStream helper type
+  lines.push("export declare function createUploadStream(): Promise<{");
+  lines.push("  stream: WritableStream<any>;");
+  lines.push("  writableId: number;");
+  lines.push("}>;");
+
+  return lines.join("\n");
+};
+
 export const createHandler = (exports) => {
   const exportKeys = Object.keys(exports);
   const iteratorStore = new Map();
@@ -48,6 +120,12 @@ export const createHandler = (exports) => {
           try {
             const msg = parse(event.data);
             const { type, id, path = [], args = [], iteratorId, instanceId } = msg;
+
+            // Keepalive ping/pong
+            if (type === "ping") {
+              send(server, { type: "pong", id });
+              return;
+            }
 
             if (type === "construct") {
               // Class instantiation
@@ -274,6 +352,18 @@ export const createHandler = (exports) => {
       const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${wsProtocol}//${url.host}${url.pathname}`;
 
+      // Serve TypeScript type definitions
+      if (url.searchParams.has("types") || url.pathname.endsWith(".d.ts")) {
+        const typeDefinitions = generateTypeDefinitions(exports, exportKeys);
+        return new Response(typeDefinitions, {
+          headers: {
+            "Content-Type": "application/typescript; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache",
+          },
+        });
+      }
+
       // Generate named exports
       const namedExports = exportKeys
         .map((key) => `export const ${key} = createProxy([${JSON.stringify(key)}]);`)
@@ -285,11 +375,15 @@ export const createHandler = (exports) => {
         .replace("__DEVALUE_PARSE__", DEVALUE_PARSE)
         .replace("__NAMED_EXPORTS__", namedExports);
 
+      // Build types URL for X-TypeScript-Types header
+      const typesUrl = `${url.protocol}//${url.host}${url.pathname}?types`;
+
       return new Response(clientCode, {
         headers: {
           "Content-Type": "application/javascript; charset=utf-8",
           "Access-Control-Allow-Origin": "*",
           "Cache-Control": "no-cache",
+          "X-TypeScript-Types": typesUrl,
         },
       });
     },

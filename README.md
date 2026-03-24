@@ -8,19 +8,22 @@
 
 ```javascript
 // Client-side: Just import from your Worker URL
-import { greet, add } from "https://my-worker.workers.dev/";
+import { greet, Counter } from "https://my-worker.workers.dev/";
 
 const message = await greet("World");  // "Hello, World!"
-const sum = await add(10, 20);         // 30
+const counter = await new Counter(10);
+await counter.increment();  // 11
 ```
 
 ## Features
 
 - **Zero-config client** - Import directly from Worker URL, no SDK needed
-- **Type-safe RPC** - Full support for async functions, generators, and nested objects
+- **Classes** - Full class support with Comlink-style instance management
+- **Streaming** - ReadableStream, AsyncIterator for real-time data
 - **Rich data types** - Date, Map, Set, BigInt, ArrayBuffer, TypedArrays via [devalue](https://github.com/sveltejs/devalue)
-- **Streaming** - AsyncIterator support for real-time data
-- **Tiny footprint** - ~6KB gzipped client bundle, served from your Worker
+- **Deno support** - Auto-generated types via `X-TypeScript-Types` header
+- **Keepalive** - Automatic ping/pong to prevent idle disconnection
+- **Tiny footprint** - Lightweight client bundle served from your Worker
 
 ## Quick Start
 
@@ -38,9 +41,10 @@ npm run dev
 │                         Your Worker                             │
 │                                                                 │
 │   // src/index.ts - Just write normal exports                  │
-│   export async function greet(name: string) {                  │
+│   export function greet(name: string) {                        │
 │     return `Hello, ${name}!`;                                  │
 │   }                                                            │
+│   export class Counter { ... }                                 │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -50,8 +54,9 @@ npm run dev
 ┌─────────────────────────────────────────────────────────────────┐
 │                          Client                                 │
 │                                                                 │
-│   import { greet } from "https://my-worker.workers.dev/";      │
-│   await greet("World");  // "Hello, World!"                    │
+│   import { greet, Counter } from "https://my-worker.workers.dev/";
+│   await greet("World");         // "Hello, World!"             │
+│   const c = await new Counter(0);                              │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -65,25 +70,27 @@ npm run dev
 
 ### Worker Side
 
-Write your functions as normal ES module exports:
+Write your functions and classes as normal ES module exports:
 
 ```typescript
 // src/index.ts
 
+// Sync functions become async on the client
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+// Async functions work as expected
 export async function greet(name: string): Promise<string> {
   return `Hello, ${name}!`;
 }
 
-export async function add(a: number, b: number): Promise<number> {
-  return a + b;
-}
-
-// Nested objects work too
+// Nested objects
 export const math = {
-  async multiply(a: number, b: number): Promise<number> {
+  multiply(a: number, b: number): number {
     return a * b;
   },
-  async factorial(n: number): Promise<number> {
+  factorial(n: number): number {
     if (n <= 1) return 1;
     let result = 1;
     for (let i = 2; i <= n; i++) result *= i;
@@ -91,11 +98,46 @@ export const math = {
   },
 };
 
-// AsyncIterators for streaming
+// AsyncIterator for streaming
 export async function* countUp(start: number, end: number): AsyncGenerator<number> {
   for (let i = start; i <= end; i++) {
     await new Promise((r) => setTimeout(r, 100));
     yield i;
+  }
+}
+
+// ReadableStream for large data streaming
+export function streamData(count: number): ReadableStream<Uint8Array> {
+  let i = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      if (i >= count) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(new TextEncoder().encode(`chunk-${i++}\n`));
+    },
+  });
+}
+
+// Classes with Comlink-style instance management
+export class Counter {
+  private count: number;
+
+  constructor(initial: number = 0) {
+    this.count = initial;
+  }
+
+  increment(): number {
+    return ++this.count;
+  }
+
+  decrement(): number {
+    return --this.count;
+  }
+
+  getCount(): number {
+    return this.count;
   }
 }
 ```
@@ -103,9 +145,9 @@ export async function* countUp(start: number, end: number): AsyncGenerator<numbe
 ### Client Side
 
 ```javascript
-import { greet, add, math, countUp } from "https://my-worker.workers.dev/";
+import { greet, add, math, countUp, streamData, Counter } from "https://my-worker.workers.dev/";
 
-// Simple function calls
+// Function calls (sync functions become async)
 const message = await greet("World");
 const sum = await add(10, 20);
 
@@ -113,10 +155,46 @@ const sum = await add(10, 20);
 const product = await math.multiply(6, 7);
 const factorial = await math.factorial(5);
 
-// Streaming with AsyncIterator
+// AsyncIterator streaming
 for await (const num of await countUp(1, 5)) {
   console.log(num);  // 1, 2, 3, 4, 5
 }
+
+// ReadableStream
+const stream = await streamData(10);
+const reader = stream.getReader();
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  console.log(new TextDecoder().decode(value));
+}
+
+// Class instantiation
+const counter = await new Counter(10);
+console.log(await counter.getCount());   // 10
+console.log(await counter.increment());  // 11
+console.log(await counter.increment());  // 12
+console.log(await counter.decrement());  // 11
+
+// Release instance when done (optional, cleaned up on disconnect)
+await counter["[release]"]();
+```
+
+### Deno Support
+
+Deno automatically fetches type definitions via the `X-TypeScript-Types` header:
+
+```typescript
+// Deno will auto-fetch types from https://my-worker.workers.dev/?types
+import { greet, Counter } from "https://my-worker.workers.dev/";
+
+const message = await greet("World");  // Type inference works!
+```
+
+You can also fetch types directly:
+
+```bash
+curl "https://my-worker.workers.dev/?types"
 ```
 
 ## Supported Types
@@ -138,6 +216,9 @@ All [structured-clonable](https://developer.mozilla.org/en-US/docs/Web/API/Web_W
 | URLSearchParams | ✅ |
 | Nested objects and arrays | ✅ |
 | Circular references | ✅ |
+| ReadableStream | ✅ |
+| AsyncIterator | ✅ |
+| Classes | ✅ |
 | Functions | ❌ (use exports) |
 
 ## Deployment
@@ -169,18 +250,25 @@ my-app/
 ## How It Works (Technical)
 
 1. **HTTP GET** to Worker URL returns dynamically generated ESM that:
-   - Establishes WebSocket connection
+   - Establishes WebSocket connection with automatic keepalive (30s ping)
    - Creates Proxy objects for each export
    - Serializes function calls with devalue
 
 2. **WebSocket** handles bidirectional RPC:
-   - Client → Worker: `{ type: "call", id, path, args }`
-   - Worker → Client: `{ type: "result", id, value }`
+   - Function calls: `{ type: "call", path, args }` → `{ type: "result", value }`
+   - Class instantiation: `{ type: "construct", path, args }` → `{ type: "result", instanceId }`
+   - Instance methods: `{ type: "call", instanceId, path, args }` → `{ type: "result", value }`
+   - Streaming: `{ type: "stream-read", streamId }` → `{ type: "stream-result", value, done }`
+   - Keepalive: `{ type: "ping" }` → `{ type: "pong" }`
 
 3. **devalue** provides rich serialization:
    - Supports Date, Map, Set, BigInt, ArrayBuffer, etc.
    - Handles circular references
    - Smaller and faster than JSON for complex objects
+
+4. **Type definitions** served via `X-TypeScript-Types` header:
+   - Auto-generated from exports at runtime
+   - Full Deno compatibility
 
 ## Requirements
 
@@ -198,5 +286,5 @@ Contributions are welcome! Please read our [contributing guidelines](CONTRIBUTIN
 ---
 
 <p align="center">
-  Built with ❤️ for the edge
+  Built with care for the edge
 </p>

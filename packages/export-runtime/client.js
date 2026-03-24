@@ -162,11 +162,27 @@ __DEVALUE_PARSE__
 const ws = new WebSocket(__WS_URL__);
 const pending = new Map();
 let nextId = 1;
+let keepaliveInterval = null;
 
 const ready = new Promise((resolve, reject) => {
-  ws.onopen = () => resolve(undefined);
+  ws.onopen = () => {
+    // Start keepalive ping every 30 seconds
+    keepaliveInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(stringify({ type: "ping", id: 0 }));
+      }
+    }, 30000);
+    resolve(undefined);
+  };
   ws.onerror = (e) => reject(e);
 });
+
+ws.onclose = () => {
+  if (keepaliveInterval) {
+    clearInterval(keepaliveInterval);
+    keepaliveInterval = null;
+  }
+};
 
 const sendRequest = async (msg) => {
   await ready;
@@ -179,6 +195,10 @@ const sendRequest = async (msg) => {
 
 ws.onmessage = (event) => {
   const msg = parse(event.data);
+
+  // Ignore pong responses (keepalive)
+  if (msg.type === "pong") return;
+
   const resolver = pending.get(msg.id);
   if (!resolver) return;
 
