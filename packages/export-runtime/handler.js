@@ -13,6 +13,9 @@ const getByPath = (obj, path) => {
 const isAsyncIterable = (value) =>
   value != null && typeof value[Symbol.asyncIterator] === "function";
 
+const isReadableStream = (value) =>
+  value != null && typeof value.getReader === "function" && typeof value.pipeTo === "function";
+
 const isClass = (fn) =>
   typeof fn === "function" && /^class\s/.test(Function.prototype.toString.call(fn));
 
@@ -20,8 +23,11 @@ export const createHandler = (exports) => {
   const exportKeys = Object.keys(exports);
   const iteratorStore = new Map();
   const instanceStore = new Map();
+  const streamStore = new Map();
+  const writableStreamStore = new Map();
   let nextIteratorId = 1;
   let nextInstanceId = 1;
+  let nextStreamId = 1;
 
   const send = (ws, data) => {
     ws.send(stringify(data));
@@ -86,7 +92,11 @@ export const createHandler = (exports) => {
                 // Await result to support both sync and async functions
                 const result = await target.apply(thisArg, args);
 
-                if (isAsyncIterable(result)) {
+                if (isReadableStream(result)) {
+                  const streamId = nextStreamId++;
+                  streamStore.set(streamId, { stream: result, reader: null });
+                  send(server, { type: "result", id, streamId, valueType: "readablestream" });
+                } else if (isAsyncIterable(result)) {
                   const iterId = nextIteratorId++;
                   iteratorStore.set(iterId, result[Symbol.asyncIterator]());
                   send(server, { type: "result", id, iteratorId: iterId, valueType: "asynciterator" });
@@ -152,6 +162,99 @@ export const createHandler = (exports) => {
               if (iter?.return) await iter.return(undefined);
               iteratorStore.delete(iteratorId);
               send(server, { type: "iterate-result", id, value: undefined, done: true });
+            } else if (type === "stream-read") {
+              // ReadableStream chunk read
+              const { streamId } = msg;
+              const entry = streamStore.get(streamId);
+              if (!entry) {
+                send(server, { type: "error", id, error: "Stream not found" });
+                return;
+              }
+              try {
+                // Get or create reader for this stream
+                let reader = entry.reader;
+                if (!reader) {
+                  reader = entry.stream.getReader();
+                  entry.reader = reader;
+                }
+                const { value, done } = await reader.read();
+                if (done) {
+                  streamStore.delete(streamId);
+                }
+                // Convert Uint8Array to array for devalue serialization
+                const serializedValue = value instanceof Uint8Array ? Array.from(value) : value;
+                send(server, { type: "stream-result", id, value: serializedValue, done: !!done });
+              } catch (err) {
+                streamStore.delete(streamId);
+                send(server, { type: "error", id, error: String(err) });
+              }
+            } else if (type === "stream-cancel") {
+              // Cancel ReadableStream
+              const { streamId } = msg;
+              const entry = streamStore.get(streamId);
+              if (entry) {
+                try {
+                  if (entry.reader) {
+                    await entry.reader.cancel();
+                  } else {
+                    await entry.stream.cancel();
+                  }
+                } catch (e) { /* ignore */ }
+                streamStore.delete(streamId);
+              }
+              send(server, { type: "result", id, value: true });
+            } else if (type === "writable-create") {
+              // Create a WritableStream on server side
+              const { targetPath, targetInstanceId } = msg;
+              let chunks = [];
+              const writableId = nextStreamId++;
+
+              const writable = new WritableStream({
+                write(chunk) {
+                  chunks.push(chunk);
+                },
+                close() {
+                  // Resolve with all chunks when stream closes
+                },
+                abort(reason) {
+                  chunks = [];
+                }
+              });
+
+              writableStreamStore.set(writableId, { writable, chunks, targetPath, targetInstanceId });
+              send(server, { type: "result", id, writableId, valueType: "writablestream" });
+            } else if (type === "writable-write") {
+              // Write chunk to WritableStream
+              const { writableId, chunk } = msg;
+              const entry = writableStreamStore.get(writableId);
+              if (!entry) {
+                send(server, { type: "error", id, error: "WritableStream not found" });
+                return;
+              }
+              try {
+                // Convert array back to Uint8Array if needed
+                const data = Array.isArray(chunk) ? new Uint8Array(chunk) : chunk;
+                entry.chunks.push(data);
+                send(server, { type: "result", id, value: true });
+              } catch (err) {
+                send(server, { type: "error", id, error: String(err) });
+              }
+            } else if (type === "writable-close") {
+              // Close WritableStream and return collected chunks
+              const { writableId } = msg;
+              const entry = writableStreamStore.get(writableId);
+              if (!entry) {
+                send(server, { type: "error", id, error: "WritableStream not found" });
+                return;
+              }
+              writableStreamStore.delete(writableId);
+              // Return the collected data
+              send(server, { type: "result", id, value: entry.chunks });
+            } else if (type === "writable-abort") {
+              // Abort WritableStream
+              const { writableId } = msg;
+              writableStreamStore.delete(writableId);
+              send(server, { type: "result", id, value: true });
             }
           } catch (err) {
             console.error("WebSocket message error:", err);
@@ -161,6 +264,8 @@ export const createHandler = (exports) => {
         server.addEventListener("close", () => {
           iteratorStore.clear();
           instanceStore.clear();
+          streamStore.clear();
+          writableStreamStore.clear();
         });
 
         return new Response(null, { status: 101, webSocket: client });

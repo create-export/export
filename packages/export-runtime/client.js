@@ -201,12 +201,54 @@ ws.onmessage = (event) => {
         }
       };
       resolver.resolve(iteratorProxy);
+    } else if (msg.valueType === "readablestream") {
+      // Create a ReadableStream proxy that pulls from server
+      const streamId = msg.streamId;
+      const stream = new ReadableStream({
+        async pull(controller) {
+          try {
+            const result = await sendRequest({ type: "stream-read", streamId });
+            if (result.done) {
+              controller.close();
+            } else {
+              controller.enqueue(result.value);
+            }
+          } catch (err) {
+            controller.error(err);
+          }
+        },
+        async cancel() {
+          await sendRequest({ type: "stream-cancel", streamId });
+        }
+      });
+      resolver.resolve(stream);
+    } else if (msg.valueType === "writablestream") {
+      // Create a WritableStream proxy that pushes to server
+      const writableId = msg.writableId;
+      const stream = new WritableStream({
+        async write(chunk) {
+          const data = chunk instanceof Uint8Array ? Array.from(chunk) : chunk;
+          await sendRequest({ type: "writable-write", writableId, chunk: data });
+        },
+        async close() {
+          await sendRequest({ type: "writable-close", writableId });
+        },
+        async abort(reason) {
+          await sendRequest({ type: "writable-abort", writableId });
+        }
+      });
+      resolver.resolve(stream);
     } else {
       resolver.resolve(msg.value);
     }
     pending.delete(msg.id);
   } else if (msg.type === "iterate-result") {
     resolver.resolve({ value: msg.value, done: msg.done });
+    pending.delete(msg.id);
+  } else if (msg.type === "stream-result") {
+    // Convert array back to Uint8Array if it was serialized
+    const value = Array.isArray(msg.value) ? new Uint8Array(msg.value) : msg.value;
+    resolver.resolve({ value, done: msg.done });
     pending.delete(msg.id);
   }
 };
@@ -248,6 +290,27 @@ const createProxy = (path = []) => new Proxy(function(){}, {
     return sendRequest({ type: "construct", path, args });
   }
 });
+
+// Helper to create a client-side WritableStream that can be passed to server functions
+export const createUploadStream = async () => {
+  const result = await sendRequest({ type: "writable-create" });
+  const writableId = result.writableId;
+
+  const stream = new WritableStream({
+    async write(chunk) {
+      const data = chunk instanceof Uint8Array ? Array.from(chunk) : chunk;
+      await sendRequest({ type: "writable-write", writableId, chunk: data });
+    },
+    async close() {
+      return sendRequest({ type: "writable-close", writableId });
+    },
+    async abort(reason) {
+      await sendRequest({ type: "writable-abort", writableId });
+    }
+  });
+
+  return { stream, writableId };
+};
 
 __NAMED_EXPORTS__
 `;

@@ -31,6 +31,21 @@ export const math = {
   },
 };
 
+// ReadableStream for streaming large data
+export function streamData(count) {
+  let i = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      if (i >= count) {
+        controller.close();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      controller.enqueue(new TextEncoder().encode(`chunk-${i++}\n`));
+    },
+  });
+}
+
 // Class export (Comlink-style)
 export class Counter {
   constructor(initial = 0) {
