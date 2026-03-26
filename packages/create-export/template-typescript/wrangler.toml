@@ -4,3 +4,4 @@ compatibility_date = "2024-11-01"
 
 [alias]
 "__USER_MODULE__" = "./src/index.ts"
+"__GENERATED_TYPES__" = "./.export-types.js"

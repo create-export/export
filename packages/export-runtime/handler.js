@@ -91,7 +91,7 @@ const generateTypeDefinitions = (exports, exportKeys) => {
   return lines.join("\n");
 };
 
-export const createHandler = (exports) => {
+export const createHandler = (exports, generatedTypes) => {
   const exportKeys = Object.keys(exports);
   const iteratorStore = new Map();
   const instanceStore = new Map();
@@ -354,7 +354,7 @@ export const createHandler = (exports) => {
 
       // Serve TypeScript type definitions
       if (url.searchParams.has("types") || url.pathname.endsWith(".d.ts")) {
-        const typeDefinitions = generateTypeDefinitions(exports, exportKeys);
+        const typeDefinitions = generatedTypes || generateTypeDefinitions(exports, exportKeys);
         return new Response(typeDefinitions, {
           headers: {
             "Content-Type": "application/typescript; charset=utf-8",

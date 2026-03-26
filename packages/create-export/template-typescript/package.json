@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "export": "wrangler deploy"
+    "dev": "generate-export-types && wrangler dev",
+    "export": "generate-export-types && wrangler deploy"
   },
   "dependencies": {
     "export-runtime": "^0.0.1"

@@ -22,12 +22,17 @@
   "exports": {
     ".": "./entry.js"
   },
+  "bin": {
+    "generate-export-types": "./bin/generate-types.mjs"
+  },
   "files": [
     "entry.js",
     "handler.js",
-    "client.js"
+    "client.js",
+    "bin/generate-types.mjs"
   ],
   "dependencies": {
-    "devalue": "^5.1.1"
+    "devalue": "^5.1.1",
+    "oxc-parser": "^0.121.0"
   }
 }
