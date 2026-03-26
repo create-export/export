@@ -1,13 +1,14 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 
-const el = ref(null);
 const rotateX = ref(0);
 const rotateY = ref(0);
 const cursorVisible = ref(true);
+const activeTab = ref("client");
 
-// Each segment: { text, cls } — cls: kw (keyword), str (string), fn (function/method), cmt (comment), p (punctuation/plain)
-const CODE_SEGMENTS = [
+// ── Code definitions ────────────────────────────────────────
+
+const CLIENT_SEGMENTS = [
   { text: 'import', cls: 'kw' }, { text: ' { greet, Counter } ', cls: 'p' }, { text: 'from', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: '"https://my-worker.dev/"', cls: 'str' }, { text: ';', cls: 'p' },
   { text: '\n\n', cls: 'p' },
   { text: 'const', cls: 'kw' }, { text: ' msg = ', cls: 'p' }, { text: 'await', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'greet', cls: 'fn' }, { text: '(', cls: 'p' }, { text: '"World"', cls: 'str' }, { text: ');', cls: 'p' },
@@ -22,16 +23,92 @@ const CODE_SEGMENTS = [
   { text: ' // 2', cls: 'cmt' },
 ];
 
-// Flatten all segments into a single character array with class info
-const ALL_CHARS = [];
-for (const seg of CODE_SEGMENTS) {
-  for (const ch of seg.text) {
-    ALL_CHARS.push({ ch, cls: seg.cls });
+const SERVER_SEGMENTS = [
+  { text: 'export', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'async', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'function', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'greet', cls: 'fn' }, { text: '(', cls: 'p' }, { text: 'name', cls: 'p' }, { text: ': ', cls: 'p' }, { text: 'string', cls: 'tp' }, { text: ') {', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '  ', cls: 'p' }, { text: 'return', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: '`Hello, ${', cls: 'str' }, { text: 'name', cls: 'p' }, { text: '}!`', cls: 'str' }, { text: ';', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '}', cls: 'p' },
+  { text: '\n\n', cls: 'p' },
+  { text: 'export', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'class', cls: 'kw' }, { text: ' ', cls: 'p' }, { text: 'Counter', cls: 'fn' }, { text: ' {', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '  ', cls: 'p' }, { text: 'private', cls: 'kw' }, { text: ' count: ', cls: 'p' }, { text: 'number', cls: 'tp' }, { text: ';', cls: 'p' },
+  { text: '\n\n', cls: 'p' },
+  { text: '  ', cls: 'p' }, { text: 'constructor', cls: 'fn' }, { text: '(initial = 0) {', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '    ', cls: 'p' }, { text: 'this', cls: 'kw' }, { text: '.count = initial;', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '  }', cls: 'p' },
+  { text: '\n\n', cls: 'p' },
+  { text: '  ', cls: 'p' }, { text: 'increment', cls: 'fn' }, { text: '() {', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '    ', cls: 'p' }, { text: 'return', cls: 'kw' }, { text: ' ++', cls: 'p' }, { text: 'this', cls: 'kw' }, { text: '.count;', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '  }', cls: 'p' },
+  { text: '\n', cls: 'p' },
+  { text: '}', cls: 'p' },
+];
+
+function flatten(segments) {
+  const chars = [];
+  for (const seg of segments) {
+    for (const ch of seg.text) chars.push({ ch, cls: seg.cls });
   }
+  return chars;
 }
+
+const TABS = {
+  client: { title: "client.js", chars: flatten(CLIENT_SEGMENTS) },
+  server: { title: "server.ts", chars: flatten(SERVER_SEGMENTS) },
+};
+
+// ── Typing state ────────────────────────────────────────────
+
+const typedChars = ref(0);
+const lineCount = ref(1);
+const currentChars = computed(() => TABS[activeTab.value].chars);
+const currentTitle = computed(() => TABS[activeTab.value].title);
 
 let rafId = null;
 let typeTimeout = null;
+
+function clearTyping() {
+  if (typeTimeout) { clearTimeout(typeTimeout); typeTimeout = null; }
+}
+
+function startTyping() {
+  clearTyping();
+  typedChars.value = 0;
+  lineCount.value = 1;
+
+  function typeNext() {
+    const chars = currentChars.value;
+    if (typedChars.value >= chars.length) {
+      typeTimeout = setTimeout(() => {
+        typedChars.value = 0;
+        lineCount.value = 1;
+        typeNext();
+      }, 3000);
+      return;
+    }
+
+    const c = chars[typedChars.value];
+    typedChars.value++;
+    if (c.ch === "\n") lineCount.value++;
+    const delay = c.ch === "\n" ? 300 : c.cls === "cmt" ? 25 : 45;
+    typeTimeout = setTimeout(typeNext, delay);
+  }
+
+  typeNext();
+}
+
+function switchTab(tab) {
+  if (activeTab.value === tab) return;
+  activeTab.value = tab;
+  startTyping();
+}
+
+// ── Mouse tracking ──────────────────────────────────────────
 
 function onMouseMove(e) {
   if (rafId) return;
@@ -44,33 +121,6 @@ function onMouseMove(e) {
   });
 }
 
-const typedChars = ref(0);
-const lineCount = ref(1);
-
-function startTyping() {
-  typedChars.value = 0;
-  lineCount.value = 1;
-
-  function typeNext() {
-    if (typedChars.value >= ALL_CHARS.length) {
-      typeTimeout = setTimeout(() => {
-        typedChars.value = 0;
-        lineCount.value = 1;
-        typeNext();
-      }, 3000);
-      return;
-    }
-
-    const c = ALL_CHARS[typedChars.value];
-    typedChars.value++;
-    if (c.ch === "\n") lineCount.value++;
-    const delay = c.ch === "\n" ? 300 : c.cls === "cmt" ? 25 : 45;
-    typeTimeout = setTimeout(typeNext, delay);
-  }
-
-  typeNext();
-}
-
 onMounted(() => {
   window.addEventListener("mousemove", onMouseMove);
   startTyping();
@@ -78,14 +128,14 @@ onMounted(() => {
   onUnmounted(() => {
     window.removeEventListener("mousemove", onMouseMove);
     clearInterval(blink);
-    if (typeTimeout) clearTimeout(typeTimeout);
+    clearTyping();
     if (rafId) cancelAnimationFrame(rafId);
   });
 });
 </script>
 
 <template>
-  <div class="hero-terminal-wrapper" ref="el">
+  <div class="hero-terminal-wrapper">
     <div
       class="hero-terminal"
       :style="{
@@ -96,15 +146,26 @@ onMounted(() => {
         <span class="dot red"></span>
         <span class="dot yellow"></span>
         <span class="dot green"></span>
-        <span class="terminal-title">client.js</span>
+        <div class="tab-group">
+          <button
+            class="tab"
+            :class="{ active: activeTab === 'client' }"
+            @click="switchTab('client')"
+          >client.js</button>
+          <button
+            class="tab"
+            :class="{ active: activeTab === 'server' }"
+            @click="switchTab('server')"
+          >server.ts</button>
+        </div>
       </div>
       <div class="terminal-body">
         <div class="line-numbers">
           <span v-for="n in lineCount" :key="n">{{ n }}</span>
         </div>
         <pre class="code"><span
-  v-for="(c, i) in ALL_CHARS.slice(0, typedChars)"
-  :key="i"
+  v-for="(c, i) in currentChars.slice(0, typedChars)"
+  :key="`${activeTab}-${i}`"
   :class="c.cls"
 >{{ c.ch }}</span><span class="cursor" :class="{ off: !cursorVisible }">|</span></pre>
       </div>
@@ -154,13 +215,33 @@ onMounted(() => {
 .dot.yellow { background: #febc2e; }
 .dot.green { background: #28c840; }
 
-.terminal-title {
+.tab-group {
+  display: flex;
+  gap: 2px;
+  margin-left: 12px;
   flex: 1;
-  text-align: center;
+}
+
+.tab {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #555;
   font-family: var(--vp-font-family-mono);
   font-size: 12px;
-  color: #555;
-  margin-right: 42px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab:hover {
+  color: #888;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab.active {
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .terminal-body {
@@ -198,13 +279,14 @@ onMounted(() => {
 
 .code .kw { color: #c586c0; }
 .code .str { color: #ce9178; }
-.code .fn { color: #d4d4d4; }
+.code .fn { color: #dcdcaa; }
+.code .tp { color: #4ec9b0; }
 .code .cmt { color: #6a9955; }
+.code .p { color: #d4d4d4; }
 
 .cursor {
   color: #d4d4d4;
   font-weight: 100;
-  animation: none;
 }
 .cursor.off {
   opacity: 0;
@@ -217,10 +299,7 @@ onMounted(() => {
   .terminal-body {
     min-height: 240px;
   }
-  .code {
-    font-size: 11px;
-  }
-  .line-numbers {
+  .code, .line-numbers {
     font-size: 11px;
   }
 }
