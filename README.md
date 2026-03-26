@@ -35,10 +35,6 @@ export async function greet(name: string) {
   return `Hello, ${name}!`;
 }
 
-export function add(a: number, b: number) {
-  return a + b;
-}
-
 export class Counter {
   private count: number;
   constructor(initial = 0) { this.count = initial; }
@@ -47,34 +43,41 @@ export class Counter {
 }
 ```
 
-That's your entire API. Deploy with `npm run export`.
+Deploy with `npm run export`. Your `src/` directory is now your API.
 
-## Import from Anywhere
+## File-based Routing
 
-### All exports at once
+Your file structure maps directly to URL paths:
 
-```javascript
-import { greet, add, Counter } from "https://my-worker.workers.dev/";
+```
+src/
+├── index.ts          → https://worker.dev/
+├── greet.ts          → https://worker.dev/greet
+├── Counter.ts        → https://worker.dev/Counter
+└── utils/
+    └── math.ts       → https://worker.dev/utils/math
 ```
 
-### Individual exports by path
-
 ```javascript
-import greet from "https://my-worker.workers.dev/greet";
-import Counter from "https://my-worker.workers.dev/Counter";
+// Import a whole module
+import { multiply, PI } from "https://worker.dev/utils/math";
+
+// Import a single export
+import multiply from "https://worker.dev/utils/math/multiply";
+
+// Root module
+import { greet } from "https://worker.dev/";
 ```
 
-### In Deno (with full type inference)
+Each module gets its own type definitions at `?types`:
 
-```typescript
-import { greet } from "https://my-worker.workers.dev/";
-
-const msg = await greet("World");  // string - types just work
+```bash
+curl "https://worker.dev/utils/math?types"
 ```
 
 ## Shared Exports
 
-Multiple clients can share the same state via [Durable Objects](https://developers.cloudflare.com/durable-objects/). Just add `?shared` to the import URL:
+Multiple clients can share the same state via [Durable Objects](https://developers.cloudflare.com/durable-objects/). Add `?shared` to the import URL:
 
 ```javascript
 // Client A
@@ -87,33 +90,26 @@ import { Counter } from "https://my-worker.workers.dev/?shared";
 await counter.increment();  // 2 -- sees Client A's state!
 ```
 
-From within another Worker, the shared state is accessible via native [Workers RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/) -- no serialization overhead:
+From within another Worker, shared state is accessible via native [Workers RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/) -- no serialization overhead:
 
 ```typescript
 import { Counter } from "./.export-shared.js";
-const counter = await new Counter(0);
 await counter.increment();  // Direct DO call, no devalue, no WebSocket
 ```
 
-Shared exports use a single Durable Object instance per room. Rooms are `"default"` unless specified via `?shared&room=lobby`.
+Rooms are `"default"` unless specified via `?shared&room=lobby`.
 
 ## Streaming
 
-### AsyncIterator
-
 ```javascript
+// AsyncIterator
 import { countUp } from "https://my-worker.workers.dev/";
-
 for await (const num of await countUp(1, 5)) {
   console.log(num);  // 1, 2, 3, 4, 5
 }
-```
 
-### ReadableStream
-
-```javascript
+// ReadableStream
 import { streamData } from "https://my-worker.workers.dev/";
-
 const reader = (await streamData(10)).getReader();
 while (true) {
   const { value, done } = await reader.read();
@@ -124,15 +120,14 @@ while (true) {
 
 ## Classes
 
-Classes work like [Comlink](https://github.com/nicolo-ribaudo/comlink) -- instantiate remotely, call methods, clean up when done:
+Instantiate remotely, call methods, clean up when done:
 
 ```javascript
 import { Counter } from "https://my-worker.workers.dev/";
 
 const counter = await new Counter(10);
 await counter.increment();  // 11
-await counter.increment();  // 12
-await counter.getCount();   // 12
+await counter.getCount();   // 11
 
 // Cleanup (optional -- auto-cleaned on disconnect)
 await counter[Symbol.dispose]();
@@ -144,15 +139,22 @@ Powered by [devalue](https://github.com/sveltejs/devalue), all structured-clonab
 
 `string` `number` `boolean` `null` `undefined` `Date` `RegExp` `Map` `Set` `BigInt` `URL` `URLSearchParams` `ArrayBuffer` `Uint8Array` `Int32Array` *(all TypedArrays)* `nested objects` `arrays` `circular references`
 
+## Deno
+
+Types are served via `X-TypeScript-Types` header -- full inference works automatically:
+
+```typescript
+import { greet } from "https://my-worker.workers.dev/";
+const msg = await greet("World");  // string
+```
+
 ## How It Works
 
-1. You write normal `export` functions and classes on the server
-2. When a client imports your Worker URL, a tiny ESM module is returned
-3. That module opens a WebSocket and creates [Proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy) objects for each export
-4. Function calls are serialized and sent over WebSocket; results come back as promises
-5. The core client (~5KB, minified with [oxc](https://oxc.rs)) is served with immutable caching -- only fetched once
-
-For shared exports, the Worker bridges WebSocket messages to a Durable Object via native Workers RPC. No double serialization.
+1. `generate-export-types` scans `src/`, builds a module map, generates types with [oxc-parser](https://oxc.rs), and minifies the ~5KB client core with [oxc-minify](https://oxc.rs)
+2. When a client imports a URL, a tiny ESM module is returned that imports the cached core
+3. The core opens a WebSocket and creates [Proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy) objects for each export
+4. Function calls are serialized with [devalue](https://github.com/sveltejs/devalue) and sent over WebSocket
+5. For shared exports, the Worker bridges to a Durable Object via native Workers RPC
 
 ## Deploy
 
@@ -160,14 +162,16 @@ For shared exports, the Worker bridges WebSocket messages to a Durable Object vi
 npm run export
 ```
 
-This generates types (via [oxc-parser](https://oxc.rs)), minifies the client, and deploys to Cloudflare.
-
 ## Packages
 
 | Package | Description |
 |---------|-------------|
 | [`create-export`](https://www.npmjs.com/package/create-export) | `npm create export` -- scaffold a new project |
 | [`export-runtime`](https://www.npmjs.com/package/export-runtime) | The runtime that powers everything |
+
+## Documentation
+
+[export-docs.pages.dev](https://export-docs.pages.dev)
 
 ## Requirements
 
