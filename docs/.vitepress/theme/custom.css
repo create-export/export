@@ -43,6 +43,10 @@
 
 /* ── Hero ──────────────────────────────────────────────────── */
 
+.VPHero .VPImage {
+  display: none !important;
+}
+
 .VPHero .name {
   font-weight: 800;
   letter-spacing: -0.04em;

@@ -5,6 +5,10 @@ hero:
   name: export
   text: Import your server as a module.
   tagline: Turn any Cloudflare Worker into a remotely importable ES module. No SDK, no codegen, no build step on the client.
+  image:
+    light: /placeholder.svg
+    dark: /placeholder.svg
+    alt: " "
   actions:
     - theme: brand
       text: Get Started
