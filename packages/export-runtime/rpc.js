@@ -1,5 +1,3 @@
-// Shared RPC dispatch logic used by both handler.js (per-connection) and shared-do.js (shared state)
-
 export const getByPath = (obj, path) => {
   let current = obj;
   for (const key of path) {
@@ -18,177 +16,146 @@ export const isReadableStream = (value) =>
 export const isClass = (fn) =>
   typeof fn === "function" && /^class\s/.test(Function.prototype.toString.call(fn));
 
-// Creates a stateful RPC dispatcher over a set of exports.
-// Returns an object with rpc* methods that manage instances, iterators, and streams.
+export const RPC_METHODS = [
+  "rpcCall", "rpcConstruct", "rpcInstanceCall", "rpcGet", "rpcSet", "rpcRelease",
+  "rpcIterateNext", "rpcIterateReturn", "rpcStreamRead", "rpcStreamCancel",
+  "rpcWritableCreate", "rpcWritableWrite", "rpcWritableClose", "rpcWritableAbort",
+];
+
 export function createRpcDispatcher(exports) {
-  const instanceStore = new Map();
-  const iteratorStore = new Map();
-  const streamStore = new Map();
-  const writableStreamStore = new Map();
-  let nextInstanceId = 1;
-  let nextIteratorId = 1;
-  let nextStreamId = 1;
+  const instances = new Map();
+  const iterators = new Map();
+  const streams = new Map();
+  const writables = new Map();
+  let nextId = 1;
+
+  const requireInstance = (id) => {
+    const inst = instances.get(id);
+    if (!inst) throw new Error("Instance not found");
+    return inst;
+  };
+
+  const wrapResult = (result, path) => {
+    if (isReadableStream(result)) {
+      const id = nextId++;
+      streams.set(id, { stream: result, reader: null });
+      return { type: "result", streamId: id, valueType: "readablestream" };
+    }
+    if (isAsyncIterable(result)) {
+      const id = nextId++;
+      iterators.set(id, result[Symbol.asyncIterator]());
+      return { type: "result", iteratorId: id, valueType: "asynciterator" };
+    }
+    if (typeof result === "function") {
+      return { type: "result", path: [...path], valueType: "function" };
+    }
+    return { type: "result", value: result };
+  };
+
+  const callTarget = async (obj, path, args) => {
+    const target = getByPath(obj, path);
+    const thisArg = path.length > 1 ? getByPath(obj, path.slice(0, -1)) : (obj === exports ? undefined : obj);
+    if (typeof target !== "function") throw new Error(`${path.join(".")} is not a function`);
+    return wrapResult(await target.apply(thisArg, args), path);
+  };
 
   return {
-    async rpcCall(path, args = []) {
-      let target;
-      let thisArg;
-      target = getByPath(exports, path);
-      thisArg = path.length > 1 ? getByPath(exports, path.slice(0, -1)) : undefined;
-
-      if (typeof target !== "function") {
-        throw new Error(`${path.join(".")} is not a function`);
-      }
-
-      const result = await target.apply(thisArg, args);
-
-      if (isReadableStream(result)) {
-        const streamId = nextStreamId++;
-        streamStore.set(streamId, { stream: result, reader: null });
-        return { type: "result", streamId, valueType: "readablestream" };
-      } else if (isAsyncIterable(result)) {
-        const iterId = nextIteratorId++;
-        iteratorStore.set(iterId, result[Symbol.asyncIterator]());
-        return { type: "result", iteratorId: iterId, valueType: "asynciterator" };
-      } else if (typeof result === "function") {
-        return { type: "result", path: [...path], valueType: "function" };
-      }
-      return { type: "result", value: result };
-    },
+    rpcCall: (path, args = []) => callTarget(exports, path, args),
 
     async rpcConstruct(path, args = []) {
       const Ctor = getByPath(exports, path);
-      if (!isClass(Ctor)) {
-        throw new Error(`${path.join(".")} is not a class`);
-      }
-      const instance = new Ctor(...args);
-      const instId = nextInstanceId++;
-      instanceStore.set(instId, instance);
-      return { type: "result", instanceId: instId, valueType: "instance" };
+      if (!isClass(Ctor)) throw new Error(`${path.join(".")} is not a class`);
+      const id = nextId++;
+      instances.set(id, new Ctor(...args));
+      return { type: "result", instanceId: id, valueType: "instance" };
     },
 
-    async rpcInstanceCall(instanceId, path, args = []) {
-      const instance = instanceStore.get(instanceId);
-      if (!instance) throw new Error("Instance not found");
-      const target = getByPath(instance, path);
-      const thisArg = path.length > 1 ? getByPath(instance, path.slice(0, -1)) : instance;
-
-      if (typeof target !== "function") {
-        throw new Error(`${path.join(".")} is not a function`);
-      }
-
-      const result = await target.apply(thisArg, args);
-
-      if (isReadableStream(result)) {
-        const streamId = nextStreamId++;
-        streamStore.set(streamId, { stream: result, reader: null });
-        return { type: "result", streamId, valueType: "readablestream" };
-      } else if (isAsyncIterable(result)) {
-        const iterId = nextIteratorId++;
-        iteratorStore.set(iterId, result[Symbol.asyncIterator]());
-        return { type: "result", iteratorId: iterId, valueType: "asynciterator" };
-      } else if (typeof result === "function") {
-        return { type: "result", path: [...path], valueType: "function" };
-      }
-      return { type: "result", value: result };
-    },
+    rpcInstanceCall: (instanceId, path, args = []) =>
+      callTarget(requireInstance(instanceId), path, args),
 
     async rpcGet(instanceId, path) {
-      const instance = instanceStore.get(instanceId);
-      if (!instance) throw new Error("Instance not found");
-      const value = getByPath(instance, path);
-      if (typeof value === "function") {
-        return { type: "result", valueType: "function" };
-      }
-      return { type: "result", value };
+      const value = getByPath(requireInstance(instanceId), path);
+      return typeof value === "function"
+        ? { type: "result", valueType: "function" }
+        : { type: "result", value };
     },
 
     async rpcSet(instanceId, path, value) {
-      const instance = instanceStore.get(instanceId);
-      if (!instance) throw new Error("Instance not found");
-      const parent = path.length > 1 ? getByPath(instance, path.slice(0, -1)) : instance;
-      parent[path[path.length - 1]] = value;
+      const inst = requireInstance(instanceId);
+      const parent = path.length > 1 ? getByPath(inst, path.slice(0, -1)) : inst;
+      parent[path.at(-1)] = value;
       return { type: "result", value: true };
     },
 
     async rpcRelease(instanceId) {
-      instanceStore.delete(instanceId);
+      instances.delete(instanceId);
       return { type: "result", value: true };
     },
 
     async rpcIterateNext(iteratorId) {
-      const iter = iteratorStore.get(iteratorId);
+      const iter = iterators.get(iteratorId);
       if (!iter) throw new Error("Iterator not found");
       const { value, done } = await iter.next();
-      if (done) iteratorStore.delete(iteratorId);
+      if (done) iterators.delete(iteratorId);
       return { type: "iterate-result", value, done: !!done };
     },
 
     async rpcIterateReturn(iteratorId) {
-      const iter = iteratorStore.get(iteratorId);
+      const iter = iterators.get(iteratorId);
       if (iter?.return) await iter.return(undefined);
-      iteratorStore.delete(iteratorId);
+      iterators.delete(iteratorId);
       return { type: "iterate-result", value: undefined, done: true };
     },
 
     async rpcStreamRead(streamId) {
-      const entry = streamStore.get(streamId);
+      const entry = streams.get(streamId);
       if (!entry) throw new Error("Stream not found");
-      let reader = entry.reader;
-      if (!reader) {
-        reader = entry.stream.getReader();
-        entry.reader = reader;
-      }
-      const { value, done } = await reader.read();
-      if (done) streamStore.delete(streamId);
-      const serializedValue = value instanceof Uint8Array ? Array.from(value) : value;
-      return { type: "stream-result", value: serializedValue, done: !!done };
+      if (!entry.reader) entry.reader = entry.stream.getReader();
+      const { value, done } = await entry.reader.read();
+      if (done) streams.delete(streamId);
+      const v = value instanceof Uint8Array ? Array.from(value) : value;
+      return { type: "stream-result", value: v, done: !!done };
     },
 
     async rpcStreamCancel(streamId) {
-      const entry = streamStore.get(streamId);
+      const entry = streams.get(streamId);
       if (entry) {
-        try {
-          if (entry.reader) await entry.reader.cancel();
-          else await entry.stream.cancel();
-        } catch { /* ignore */ }
-        streamStore.delete(streamId);
+        try { await (entry.reader || entry.stream).cancel(); } catch {}
+        streams.delete(streamId);
       }
       return { type: "result", value: true };
     },
 
     async rpcWritableCreate() {
-      let chunks = [];
-      const writableId = nextStreamId++;
-      writableStreamStore.set(writableId, { chunks });
-      return { type: "result", writableId, valueType: "writablestream" };
+      const id = nextId++;
+      writables.set(id, { chunks: [] });
+      return { type: "result", writableId: id, valueType: "writablestream" };
     },
 
     async rpcWritableWrite(writableId, chunk) {
-      const entry = writableStreamStore.get(writableId);
+      const entry = writables.get(writableId);
       if (!entry) throw new Error("WritableStream not found");
-      const data = Array.isArray(chunk) ? new Uint8Array(chunk) : chunk;
-      entry.chunks.push(data);
+      entry.chunks.push(Array.isArray(chunk) ? new Uint8Array(chunk) : chunk);
       return { type: "result", value: true };
     },
 
     async rpcWritableClose(writableId) {
-      const entry = writableStreamStore.get(writableId);
+      const entry = writables.get(writableId);
       if (!entry) throw new Error("WritableStream not found");
-      writableStreamStore.delete(writableId);
+      writables.delete(writableId);
       return { type: "result", value: entry.chunks };
     },
 
     async rpcWritableAbort(writableId) {
-      writableStreamStore.delete(writableId);
+      writables.delete(writableId);
       return { type: "result", value: true };
     },
 
     clearAll() {
-      instanceStore.clear();
-      iteratorStore.clear();
-      streamStore.clear();
-      writableStreamStore.clear();
+      instances.clear();
+      iterators.clear();
+      streams.clear();
+      writables.clear();
     },
   };
 }
