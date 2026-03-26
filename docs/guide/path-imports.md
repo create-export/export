@@ -1,50 +1,75 @@
 ---
-description: "Import individual exports by URL path, like esm.sh. The ~5KB core module is immutably cached for instant subsequent imports."
+description: "Your src/ file structure becomes your API. Each file is importable by its path, and individual exports can be accessed by name."
 ---
 
 # Path-based Imports
 
-You can import individual exports by adding the export name to the URL path, similar to [esm.sh](https://esm.sh).
+Your `src/` directory structure directly maps to URL paths. Each file becomes its own importable module.
 
-## Usage
+## File → URL mapping
 
-```javascript
-// Import everything from the root
-import { greet, Counter } from "https://my-worker.workers.dev/";
-
-// Or import a single export by path
-import greet from "https://my-worker.workers.dev/greet";
-import Counter from "https://my-worker.workers.dev/Counter";
+```
+src/
+├── index.ts          → https://worker.dev/
+├── greet.ts          → https://worker.dev/greet
+├── Counter.ts        → https://worker.dev/Counter
+└── utils/
+    └── math.ts       → https://worker.dev/utils/math
 ```
 
-Each path provides both a default export and a named export:
+## Importing a module
 
 ```javascript
-import greetDefault from "https://my-worker.workers.dev/greet";
-import { greet } from "https://my-worker.workers.dev/greet";
-// Both work
+// Import all exports from src/utils/math.ts
+import { multiply, divide, PI } from "https://worker.dev/utils/math";
+
+await multiply(6, 7);  // 42
 ```
+
+## Importing a specific export
+
+You can append the export name to the module path:
+
+```javascript
+// Just the multiply function from src/utils/math.ts
+import multiply from "https://worker.dev/utils/math/multiply";
+
+await multiply(6, 7);  // 42
+```
+
+## Root module
+
+`src/index.ts` maps to the root URL `/`:
+
+```javascript
+import { greet } from "https://worker.dev/";
+```
+
+If no file module matches a path, it falls back to looking up exports from the root module. So if `src/greet.ts` doesn't exist but `src/index.ts` exports `greet`, then `/greet` still works.
+
+::: tip Priority
+File modules take priority over root exports. If both `src/greet.ts` and an export named `greet` in `src/index.ts` exist, `/greet` serves the file module.
+:::
 
 ## How it works
 
-When you request `GET /greet`, the server returns a tiny module (~130 bytes):
+At build time, `generate-export-types` scans `src/` and produces a module map:
 
 ```javascript
-import { createProxy } from "./<uuid>.js";
-const _export = createProxy(["greet"]);
-export default _export;
-export { _export as greet };
+// .export-module-map.js (generated)
+import * as _0 from "./src/index.ts";
+import * as _1 from "./src/greet.ts";
+import * as _2 from "./src/utils/math.ts";
+export default { "": _0, "greet": _1, "utils/math": _2 };
 ```
 
-The `<uuid>.js` core module is shared across all imports and cached immutably by the browser. Only the first import fetches the ~5KB core; subsequent path imports are near-instant.
+Wrangler bundles all source files in one pass. The handler uses the map to route requests.
 
 ## Type definitions
 
-Each path also serves scoped types:
+Each module has its own types:
 
+```bash
+curl "https://worker.dev/?types"            # types for src/index.ts
+curl "https://worker.dev/utils/math?types"  # types for src/utils/math.ts
 ```
-GET /greet?types
-→ export { greet as default, greet } from "./?types";
-```
-
-The full type definitions at `/?types` are the single source of truth. Per-path types simply re-export from there, keeping the payload minimal.
