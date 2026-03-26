@@ -79,3 +79,49 @@ export function getTypedArray(): Uint8Array { return new Uint8Array([1, 2, 3, 4,
 // --- Constants ---
 export const VERSION = "1.0.0";
 export const MAX_COUNT = 100;
+
+// --- Edge case: empty generator (start > end) ---
+export async function* emptyGen(): AsyncGenerator<number> {}
+
+// --- Edge case: generator that throws mid-iteration ---
+export async function* throwingGen(): AsyncGenerator<number> {
+  yield 1;
+  yield 2;
+  throw new Error("generator exploded");
+}
+
+// --- Edge case: function returning undefined explicitly ---
+export function returnUndefined(): undefined { return undefined; }
+export function returnNull(): null { return null; }
+
+// --- Edge case: large payload ---
+export function largeArray(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => i);
+}
+
+// --- Edge case: deeply nested path ---
+export const deep = {
+  level1: {
+    level2: {
+      level3: {
+        value: 42,
+        fn(x: number): number { return x * 2; },
+      },
+    },
+  },
+};
+
+// --- Edge case: async function that takes a long time ---
+export async function slowFunction(ms: number): Promise<string> {
+  await new Promise((r) => setTimeout(r, ms));
+  return "done";
+}
+
+// --- Edge case: multiple return types ---
+export function echoAll(...args: any[]): any[] { return args; }
+
+// --- Edge case: URL and URLSearchParams ---
+export function getUrl(): URL { return new URL("https://example.com/path?q=1"); }
+export function getUrlSearchParams(): URLSearchParams {
+  return new URLSearchParams("a=1&b=2&c=3");
+}

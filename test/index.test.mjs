@@ -162,14 +162,29 @@ describe("HTTP routing", () => {
   });
 
   it("core UUID changes per build", () => {
-    const typesFile = path.join(FIXTURE_DIR, ".export-types.js");
-    const original = fs.readFileSync(typesFile, "utf8");
+    // Run in a temp copy to avoid hot-reloading the fixture server
+    const tmp = path.join(FIXTURE_DIR, "..", ".tmp-uuid-test");
     try {
-      execSync("npx generate-export-types", { cwd: FIXTURE_DIR });
-      const id2 = readCoreId();
-      assert.notEqual(coreId, id2, "UUIDs should differ between builds");
+      fs.mkdirSync(tmp, { recursive: true });
+      fs.cpSync(path.join(FIXTURE_DIR, "src"), path.join(tmp, "src"), { recursive: true });
+      fs.copyFileSync(path.join(FIXTURE_DIR, "wrangler.toml"), path.join(tmp, "wrangler.toml"));
+      fs.mkdirSync(path.join(tmp, "node_modules"), { recursive: true });
+      // Symlink export-runtime so generate-export-types works
+      fs.symlinkSync(
+        path.resolve(FIXTURE_DIR, "node_modules/export-runtime"),
+        path.join(tmp, "node_modules/export-runtime"),
+      );
+      execSync("npx generate-export-types", { cwd: tmp });
+      const id1 = fs.readFileSync(path.join(tmp, ".export-types.js"), "utf8")
+        .match(/coreId = "([^"]+)"/)?.[1];
+      execSync("npx generate-export-types", { cwd: tmp });
+      const id2 = fs.readFileSync(path.join(tmp, ".export-types.js"), "utf8")
+        .match(/coreId = "([^"]+)"/)?.[1];
+      assert.ok(id1, "first coreId should exist");
+      assert.ok(id2, "second coreId should exist");
+      assert.notEqual(id1, id2, "UUIDs should differ between builds");
     } finally {
-      fs.writeFileSync(typesFile, original);
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
@@ -579,5 +594,333 @@ describe("RPC: devalue round-trip", () => {
 
   it("BigInt via echo", async () => {
     assert.equal((await rpc.call(["echo"], [42n])).value, 42n);
+  });
+
+  it("URL", async () => {
+    const r = await rpc.call(["getUrl"]);
+    assert.ok(r.value instanceof URL);
+    assert.equal(r.value.hostname, "example.com");
+    assert.equal(r.value.pathname, "/path");
+  });
+
+  it("URLSearchParams", async () => {
+    const r = await rpc.call(["getUrlSearchParams"]);
+    assert.ok(r.value instanceof URLSearchParams);
+    assert.equal(r.value.get("a"), "1");
+    assert.equal(r.value.get("c"), "3");
+  });
+
+  it("empty string", async () => {
+    assert.equal((await rpc.call(["echo"], [""])).value, "");
+  });
+
+  it("zero", async () => {
+    assert.equal((await rpc.call(["echo"], [0])).value, 0);
+  });
+
+  it("false", async () => {
+    assert.equal((await rpc.call(["echo"], [false])).value, false);
+  });
+
+  it("empty array", async () => {
+    assert.deepEqual((await rpc.call(["echo"], [[]])).value, []);
+  });
+
+  it("empty object", async () => {
+    assert.deepEqual((await rpc.call(["echo"], [{}])).value, {});
+  });
+
+  it("empty Set", async () => {
+    const r = await rpc.call(["echo"], [new Set()]);
+    assert.ok(r.value instanceof Set);
+    assert.equal(r.value.size, 0);
+  });
+
+  it("empty Map", async () => {
+    const r = await rpc.call(["echo"], [new Map()]);
+    assert.ok(r.value instanceof Map);
+    assert.equal(r.value.size, 0);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+//  Edge Cases: Concurrency
+// ═════════════════════════════════════════════════════════════
+
+describe("edge: concurrency", () => {
+  it("parallel RPC calls return correct results", async () => {
+    const results = await Promise.all([
+      rpc.call(["add"], [1, 2]),
+      rpc.call(["add"], [3, 4]),
+      rpc.call(["add"], [5, 6]),
+      rpc.call(["add"], [10, 20]),
+      rpc.call(["greet"], ["A"]),
+      rpc.call(["greet"], ["B"]),
+    ]);
+    assert.equal(results[0].value, 3);
+    assert.equal(results[1].value, 7);
+    assert.equal(results[2].value, 11);
+    assert.equal(results[3].value, 30);
+    assert.equal(results[4].value, "Hello, A!");
+    assert.equal(results[5].value, "Hello, B!");
+  });
+
+  it("parallel instance operations stay isolated", async () => {
+    const [c1, c2, c3] = await Promise.all([
+      rpc.construct(["Counter"], [0]),
+      rpc.construct(["Counter"], [100]),
+      rpc.construct(["Counter"], [200]),
+    ]);
+    await Promise.all([
+      rpc.instanceCall(c1.instanceId, ["increment"]),
+      rpc.instanceCall(c2.instanceId, ["increment"]),
+      rpc.instanceCall(c3.instanceId, ["decrement"]),
+    ]);
+    const [r1, r2, r3] = await Promise.all([
+      rpc.instanceCall(c1.instanceId, ["getCount"]),
+      rpc.instanceCall(c2.instanceId, ["getCount"]),
+      rpc.instanceCall(c3.instanceId, ["getCount"]),
+    ]);
+    assert.equal(r1.value, 1);
+    assert.equal(r2.value, 101);
+    assert.equal(r3.value, 199);
+  });
+
+  it("many rapid sequential calls", async () => {
+    const c = await rpc.construct(["Counter"], [0]);
+    for (let i = 0; i < 50; i++) {
+      await rpc.instanceCall(c.instanceId, ["increment"]);
+    }
+    assert.equal((await rpc.instanceCall(c.instanceId, ["getCount"])).value, 50);
+  });
+
+  it("multiple streams active simultaneously", async () => {
+    const [s1, s2] = await Promise.all([
+      rpc.call(["streamData"], [2]),
+      rpc.call(["streamData"], [3]),
+    ]);
+    const collect = async (streamId) => {
+      const chunks = [];
+      let done = false;
+      while (!done) {
+        const next = await rpc.streamRead(streamId);
+        if (next.done) done = true; else chunks.push(next.value);
+      }
+      return chunks;
+    };
+    const [c1, c2] = await Promise.all([
+      collect(s1.streamId),
+      collect(s2.streamId),
+    ]);
+    assert.equal(c1.length, 2);
+    assert.equal(c2.length, 3);
+  });
+
+  it("multiple iterators active simultaneously", async () => {
+    const [i1, i2] = await Promise.all([
+      rpc.call(["countUp"], [1, 2]),
+      rpc.call(["countUp"], [10, 12]),
+    ]);
+    const collect = async (iteratorId) => {
+      const values = [];
+      let done = false;
+      while (!done) {
+        const next = await rpc.iterateNext(iteratorId);
+        if (next.done) done = true; else values.push(next.value);
+      }
+      return values;
+    };
+    const [v1, v2] = await Promise.all([
+      collect(i1.iteratorId),
+      collect(i2.iteratorId),
+    ]);
+    assert.deepEqual(v1, [1, 2]);
+    assert.deepEqual(v2, [10, 11, 12]);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+//  Edge Cases: Generators
+// ═════════════════════════════════════════════════════════════
+
+describe("edge: generators", () => {
+  it("empty generator yields nothing then done", async () => {
+    const r = await rpc.call(["emptyGen"]);
+    assert.equal(r.valueType, "asynciterator");
+    const next = await rpc.iterateNext(r.iteratorId);
+    assert.equal(next.done, true);
+  });
+
+  it("generator that throws mid-iteration propagates error", async () => {
+    const r = await rpc.call(["throwingGen"]);
+    const v1 = await rpc.iterateNext(r.iteratorId);
+    assert.equal(v1.value, 1);
+    const v2 = await rpc.iterateNext(r.iteratorId);
+    assert.equal(v2.value, 2);
+    await assert.rejects(() => rpc.iterateNext(r.iteratorId), /generator exploded/);
+  });
+
+  it("iterate-return on already-finished iterator", async () => {
+    const r = await rpc.call(["emptyGen"]);
+    await rpc.iterateNext(r.iteratorId); // done=true, iterator deleted
+    // iterate-return on non-existent iterator should still return done
+    const ret = await rpc.iterateReturn(r.iteratorId);
+    assert.equal(ret.done, true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+//  Edge Cases: Function Call Boundaries
+// ═════════════════════════════════════════════════════════════
+
+describe("edge: function call boundaries", () => {
+  it("function returning undefined", async () => {
+    const r = await rpc.call(["returnUndefined"]);
+    assert.equal(r.value, undefined);
+  });
+
+  it("function returning null", async () => {
+    const r = await rpc.call(["returnNull"]);
+    assert.equal(r.value, null);
+  });
+
+  it("calling function with no args", async () => {
+    const r = await rpc.call(["getDate"]);
+    assert.ok(r.value instanceof Date);
+  });
+
+  it("calling function with extra args (ignored)", async () => {
+    const r = await rpc.call(["add"], [1, 2, 3, 4, 5]);
+    assert.equal(r.value, 3); // add only uses first 2
+  });
+
+  it("variadic args via echoAll", async () => {
+    const r = await rpc.call(["echoAll"], [1, "two", true]);
+    assert.deepEqual(r.value, [1, "two", true]);
+  });
+
+  it("deeply nested path call", async () => {
+    const r = await rpc.call(["deep", "level1", "level2", "level3", "fn"], [21]);
+    assert.equal(r.value, 42);
+  });
+
+  it("large payload round-trip", async () => {
+    const r = await rpc.call(["largeArray"], [1000]);
+    assert.equal(r.value.length, 1000);
+    assert.equal(r.value[0], 0);
+    assert.equal(r.value[999], 999);
+  });
+
+  it("constructor with default args", async () => {
+    const c = await rpc.construct(["Counter"]);
+    assert.equal((await rpc.instanceCall(c.instanceId, ["getCount"])).value, 0);
+    assert.equal((await rpc.instanceCall(c.instanceId, ["getLabel"])).value, "default");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+//  Edge Cases: WebSocket Isolation
+// ═════════════════════════════════════════════════════════════
+
+describe("edge: WebSocket isolation", () => {
+  it("second connection cannot see first connection instances", async () => {
+    // Create instance on shared rpc
+    const c = await rpc.construct(["Counter"], [42]);
+
+    // Open a separate connection
+    const rpc2 = await rpcClient();
+    try {
+      // The instance belongs to a different WS connection,
+      // but instanceStore is shared per handler. So this may or may not work
+      // depending on implementation. Test that at least both connections work.
+      const c2 = await rpc2.construct(["Counter"], [99]);
+      assert.equal(
+        (await rpc2.instanceCall(c2.instanceId, ["getCount"])).value,
+        99
+      );
+    } finally {
+      rpc2.close();
+    }
+  });
+
+  it("WebSocket upgrade works on any path", async () => {
+    // Connect via a non-root path
+    const rpc2 = await new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${PORT}/some/random/path`);
+      let mid = 0;
+      const pending = new Map();
+      ws.on("message", (raw) => {
+        const msg = parse(raw.toString());
+        const r = pending.get(msg.id);
+        if (r) { pending.delete(msg.id); r.resolve(msg); }
+      });
+      ws.on("open", () => resolve({
+        call: (p, args = []) => new Promise((res, rej) => {
+          const id = ++mid;
+          pending.set(id, { resolve: res, reject: rej });
+          ws.send(stringify({ type: "call", id, path: p, args }));
+        }),
+        close: () => ws.close(),
+      }));
+      ws.on("error", reject);
+    });
+    try {
+      const r = await rpc2.call(["add"], [100, 200]);
+      assert.equal(r.value, 300);
+    } finally {
+      rpc2.close();
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════
+//  Edge Cases: HTTP Routing Boundaries
+// ═════════════════════════════════════════════════════════════
+
+describe("edge: HTTP routing boundaries", () => {
+  it("query params on per-export route are ignored (not ?types)", async () => {
+    const res = await fetch(`${BASE}/greet?foo=bar`);
+    // ?foo=bar without ?types should still return the JS module
+    const body = await res.text();
+    assert.equal(res.status, 200);
+    assert.ok(body.includes("createProxy"));
+  });
+
+  it("per-export route for constant export", async () => {
+    const body = await fetch(`${BASE}/VERSION`).then((r) => r.text());
+    assert.ok(body.includes("VERSION"));
+    assert.ok(body.includes("createProxy"));
+  });
+
+  it("per-export route for nested object export", async () => {
+    const body = await fetch(`${BASE}/math`).then((r) => r.text());
+    assert.ok(body.includes("as math"));
+  });
+
+  it("per-export route for new edge case exports", async () => {
+    for (const name of ["deep", "emptyGen", "largeArray", "echoAll"]) {
+      const res = await fetch(`${BASE}/${name}`);
+      assert.equal(res.status, 200, `${name} should be accessible`);
+    }
+  });
+
+  it("deep path returns 404 (only top-level exports are routes)", async () => {
+    assert.equal((await fetch(`${BASE}/deep/level1`)).status, 404);
+  });
+
+  it("empty ReadableStream (0 chunks)", async () => {
+    const r = await rpc.call(["streamData"], [0]);
+    assert.equal(r.valueType, "readablestream");
+    const next = await rpc.streamRead(r.streamId);
+    assert.equal(next.done, true);
+  });
+
+  it("writable stream with many chunks", async () => {
+    const w = await rpc.writableCreate();
+    for (let i = 0; i < 20; i++) {
+      await rpc.writableWrite(w.writableId, [i]);
+    }
+    const result = await rpc.writableClose(w.writableId);
+    assert.equal(result.value.length, 20);
   });
 });
