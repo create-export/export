@@ -104,7 +104,7 @@ export default defineConfig({
       { text: "Guide", link: "/guide/getting-started" },
       { text: "API", link: "/api/" },
       {
-        text: "0.0.10",
+        text: "0.0.11",
         items: [
           {
             text: "Changelog",
