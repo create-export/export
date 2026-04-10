@@ -275,9 +275,36 @@ const createKVProxy = (binding) => ({
 
 // Auth client proxy
 const createAuthProxy = () => {
+  // Check for session token in URL hash (after OAuth redirect)
+  const checkUrlToken = () => {
+    if (typeof window !== "undefined" && window.location.hash) {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const token = params.get("token");
+      if (token) {
+        sessionToken = token;
+        // Clean up URL
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        return token;
+      }
+    }
+    return null;
+  };
+
+  // Try to restore session on init
+  checkUrlToken();
+
   const signIn = {
-    social: async (provider, options) => {
+    social: async (provider, options = {}) => {
       const result = await sendRequest({ type: "auth", method: "signIn.social", provider, options });
+      if (result.redirectUrl) {
+        // Redirect to OAuth provider
+        if (typeof window !== "undefined") {
+          window.location.href = result.redirectUrl;
+          // Return a promise that never resolves (page is redirecting)
+          return new Promise(() => {});
+        }
+        return result;
+      }
       if (result.token) {
         sessionToken = result.token;
         await reconnect();
@@ -286,7 +313,7 @@ const createAuthProxy = () => {
     },
     email: async (email, password, options) => {
       const result = await sendRequest({ type: "auth", method: "signIn.email", email, password, options });
-      if (result.token) {
+      if (result.success && result.token) {
         sessionToken = result.token;
         await reconnect();
       }
@@ -295,9 +322,9 @@ const createAuthProxy = () => {
   };
 
   const signUp = {
-    email: async (email, password, options) => {
-      const result = await sendRequest({ type: "auth", method: "signUp.email", email, password, options });
-      if (result.token) {
+    email: async (email, password, name, options) => {
+      const result = await sendRequest({ type: "auth", method: "signUp.email", email, password, name, options });
+      if (result.success && result.token) {
         sessionToken = result.token;
         await reconnect();
       }
@@ -316,6 +343,19 @@ const createAuthProxy = () => {
     },
     getSession: () => sendRequest({ type: "auth", method: "getSession" }),
     getUser: () => sendRequest({ type: "auth", method: "getUser" }),
+    // Manually set token (useful after OAuth redirect)
+    setToken: async (token) => {
+      const result = await sendRequest({ type: "auth", method: "setToken", token });
+      if (result.success) {
+        sessionToken = token;
+        await reconnect();
+      }
+      return result;
+    },
+    // Check if user is authenticated
+    get isAuthenticated() {
+      return sessionToken !== null;
+    },
   };
 };
 

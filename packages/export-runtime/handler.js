@@ -1,6 +1,7 @@
 import { stringify, parse } from "devalue";
 import { generateCoreCode, CORE_CODE, SHARED_CORE_CODE } from "./client.js";
 import { createRpcDispatcher } from "./rpc.js";
+import { handleAuthRoute, getSessionFromRequest, verifySession } from "./auth.js";
 
 const JS = "application/javascript; charset=utf-8";
 const TS = "application/typescript; charset=utf-8";
@@ -163,32 +164,113 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
     }
   };
 
-  // Auth request handler (placeholder - will be integrated with better-auth)
-  const handleAuthRequest = async (env, msg, sessionStore) => {
-    const { method, provider, email, password, options } = msg;
+  // Auth request handler (WebSocket-based auth operations)
+  const handleAuthRequest = async (env, msg, wsSession) => {
+    const { method, provider, email, password, name, options, token } = msg;
 
-    // TODO: Integrate with better-auth
-    // For now, return placeholder responses
+    // Handle methods that work without auth config
+    if (!authConfig) {
+      switch (method) {
+        case "signOut":
+          return { type: "result", value: { success: true } };
+        case "getSession":
+        case "getUser":
+          return { type: "result", value: null };
+        case "signIn.social": {
+          const hint = provider ? ` For ${provider} OAuth, also set ${provider.toUpperCase()}_CLIENT_ID/SECRET env vars.` : "";
+          return { type: "result", value: { error: `Auth not configured. Add 'auth: true' to cloudflare config in package.json.${hint}` } };
+        }
+        default:
+          if (!["signIn.email", "signUp.email", "setToken"].includes(method)) {
+            throw new Error(`Unknown auth method: ${method}`);
+          }
+          return { type: "result", value: { error: "Auth not configured. Add 'auth: true' to cloudflare config in package.json." } };
+      }
+    }
+
+    const baseUrl = env.WORKER_URL || "https://localhost:8787";
+
     switch (method) {
-      case "signIn.social":
-        // Will redirect to OAuth provider
-        return { type: "result", value: { error: "Auth not configured. Run: npm run auth:add " + provider } };
-      case "signIn.email":
-        return { type: "result", value: { error: "Auth not configured" } };
-      case "signUp.email":
-        return { type: "result", value: { error: "Auth not configured" } };
-      case "signOut":
+      case "signIn.social": {
+        // Return the OAuth URL for client to redirect to
+        const callbackUrl = options?.callbackUrl || "/";
+        const authUrl = `${baseUrl}/api/auth/signin/${provider}?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+        return { type: "result", value: { redirectUrl: authUrl } };
+      }
+      case "signIn.email": {
+        // Forward to better-auth via internal fetch
+        try {
+          const response = await fetch(`${baseUrl}/api/auth/signin/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await response.json();
+          if (response.ok && data.token) {
+            return { type: "result", value: { success: true, token: data.token, user: data.user } };
+          }
+          return { type: "result", value: { error: data.error || "Sign in failed" } };
+        } catch (err) {
+          return { type: "result", value: { error: String(err) } };
+        }
+      }
+      case "signUp.email": {
+        try {
+          const response = await fetch(`${baseUrl}/api/auth/signup/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password, name }),
+          });
+          const data = await response.json();
+          if (response.ok && data.token) {
+            return { type: "result", value: { success: true, token: data.token, user: data.user } };
+          }
+          return { type: "result", value: { error: data.error || "Sign up failed" } };
+        } catch (err) {
+          return { type: "result", value: { error: String(err) } };
+        }
+      }
+      case "signOut": {
+        // Clear session via better-auth
+        if (wsSession?.token) {
+          try {
+            await fetch(`${baseUrl}/api/auth/signout`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Cookie": `better-auth.session_token=${wsSession.token}`,
+              },
+            });
+          } catch {}
+        }
         return { type: "result", value: { success: true } };
-      case "getSession":
-        return { type: "result", value: null };
-      case "getUser":
-        return { type: "result", value: null };
+      }
+      case "getSession": {
+        if (!wsSession?.token) return { type: "result", value: null };
+        const session = await verifySession(wsSession.token, env, authConfig);
+        return { type: "result", value: session };
+      }
+      case "getUser": {
+        if (!wsSession?.token) return { type: "result", value: null };
+        const session = await verifySession(wsSession.token, env, authConfig);
+        return { type: "result", value: session?.user || null };
+      }
+      case "setToken": {
+        // Client sends token after OAuth redirect
+        if (token) {
+          const session = await verifySession(token, env, authConfig);
+          if (session) {
+            return { type: "result", value: { success: true, session } };
+          }
+        }
+        return { type: "result", value: { error: "Invalid token" } };
+      }
       default:
         throw new Error(`Unknown auth method: ${method}`);
     }
   };
 
-  const dispatchMessage = async (dispatcher, msg, env) => {
+  const dispatchMessage = async (dispatcher, msg, env, wsSession) => {
     const { type, path = [], args = [], instanceId, iteratorId, streamId } = msg;
     switch (type) {
       case "ping": return { type: "pong" };
@@ -208,17 +290,32 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       case "d1": return handleD1Request(env, msg);
       case "r2": return handleR2Request(env, msg);
       case "kv": return handleKVRequest(env, msg);
-      case "auth": return handleAuthRequest(env, msg);
+      case "auth": return handleAuthRequest(env, msg, wsSession);
     }
   };
 
   const wireWebSocket = (server, dispatcher, env, onClose) => {
+    // Track session state for this WebSocket connection
+    const wsSession = { token: null };
+
     server.addEventListener("message", async (event) => {
       let id;
       try {
         const msg = parse(event.data);
         id = msg.id;
-        const result = await dispatchMessage(dispatcher, msg, env);
+
+        // Handle auth token updates
+        if (msg.type === "auth" && msg.method === "setToken" && msg.token) {
+          wsSession.token = msg.token;
+        }
+
+        const result = await dispatchMessage(dispatcher, msg, env, wsSession);
+
+        // Extract token from auth responses
+        if (result?.value?.token && msg.type === "auth") {
+          wsSession.token = result.value.token;
+        }
+
         if (result) server.send(stringify({ ...result, id }));
       } catch (err) {
         if (id !== undefined) server.send(stringify({ type: "error", id, error: String(err) }));
@@ -252,6 +349,11 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
 
       // --- HTTP routing ---
       const pathname = url.pathname;
+
+      // Auth routes (handled by better-auth)
+      if (authConfig && pathname.startsWith("/api/auth/")) {
+        return handleAuthRoute(request, env, authConfig);
+      }
 
       // Core modules
       if (pathname === corePath) return jsResponse(coreModuleCode, { "Cache-Control": IMMUTABLE });

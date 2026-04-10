@@ -158,6 +158,84 @@ wrangler kv namespace create SESSIONS
 
 Update the generated `wrangler.toml` with the returned IDs before deploying.
 
+## Authentication
+
+Enable authentication powered by [better-auth](https://better-auth.com):
+
+```json
+{
+  "cloudflare": {
+    "auth": true
+  }
+}
+```
+
+This automatically adds an `AUTH_DB` D1 binding for storing users and sessions.
+
+### Usage
+
+```javascript
+import client from "https://my-worker.workers.dev/";
+
+const { auth } = client;
+
+// Sign up with email
+const { user, error } = await auth.signUp.email(
+  "user@example.com",
+  "password123",
+  "John Doe"
+);
+
+// Sign in with email
+await auth.signIn.email("user@example.com", "password123");
+
+// Sign in with OAuth (redirects to provider)
+await auth.signIn.social("google");
+await auth.signIn.social("github");
+
+// Get current session
+const session = await auth.getSession();
+
+// Get current user
+const user = await auth.getUser();
+
+// Sign out
+await auth.signOut();
+
+// Check if authenticated
+if (auth.isAuthenticated) {
+  console.log("User is logged in");
+}
+```
+
+### OAuth Setup
+
+For social login, set environment variables in your Cloudflare dashboard:
+
+```
+BETTER_AUTH_SECRET=your-secret-key
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+```
+
+OAuth callback URLs:
+- `https://your-worker.workers.dev/api/auth/callback/google`
+- `https://your-worker.workers.dev/api/auth/callback/github`
+
+### Database Setup
+
+Run better-auth migrations on your AUTH_DB:
+
+```bash
+# Create the database
+wrangler d1 create my-app-auth-db
+
+# Run migrations (after deploying once)
+npx better-auth migrate
+```
+
 ## Server-Side Access
 
 On the server side, bindings are available via the standard Cloudflare `env` object:

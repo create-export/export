@@ -156,12 +156,30 @@ Configure bindings in `package.json`:
   "cloudflare": {
     "d1": ["MY_DB"],
     "r2": ["MY_BUCKET"],
-    "kv": ["MY_KV"]
+    "kv": ["MY_KV"],
+    "auth": true
   }
 }
 ```
 
 Binding names must be `UPPER_SNAKE_CASE`. The `wrangler.toml` will be auto-generated with the correct bindings.
+
+### Authentication
+
+When `auth: true` is set, authentication is enabled via [better-auth](https://better-auth.com):
+
+```javascript
+// Email/password
+await client.auth.signUp.email("user@example.com", "password", "Name");
+await client.auth.signIn.email("user@example.com", "password");
+
+// OAuth (Google, GitHub, etc.)
+await client.auth.signIn.social("google");
+
+// Session
+const user = await client.auth.getUser();
+await client.auth.signOut();
+```
 
 ## Shared Exports
 
