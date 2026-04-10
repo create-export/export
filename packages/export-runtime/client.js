@@ -1,4 +1,5 @@
 // Core module template. __WS_SUFFIX__ is replaced: "./" for normal, "./?shared" for shared.
+// __D1_BINDINGS__, __R2_BINDINGS__, __KV_BINDINGS__, __AUTH_ENABLED__ are replaced with config.
 const CORE_TEMPLATE = `
 const stringify = (value) => {
   const stringified = [];
@@ -109,22 +110,77 @@ const parse = (serialized) => {
 
 const _u = new URL("__WS_SUFFIX__", import.meta.url);
 _u.protocol = _u.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(_u.href);
+let ws = new WebSocket(_u.href);
 const pending = new Map();
 let nextId = 1;
 let keepaliveInterval;
+let sessionToken = null;
+
+const setupWs = (socket) => {
+  socket.onopen = () => {
+    keepaliveInterval = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(stringify({ type: "ping", id: 0 }));
+    }, 30000);
+    // Send session token if available
+    if (sessionToken) {
+      socket.send(stringify({ type: "auth", token: sessionToken, id: 0 }));
+    }
+  };
+  socket.onclose = () => { clearInterval(keepaliveInterval); };
+  socket.onmessage = (event) => {
+    const msg = parse(event.data);
+
+    // Handle auth response
+    if (msg.type === "auth-result") {
+      if (msg.token) sessionToken = msg.token;
+      return;
+    }
+
+    const resolver = pending.get(msg.id);
+    if (!resolver) return;
+    pending.delete(msg.id);
+
+    if (msg.type === "error") {
+      resolver.reject(new Error(msg.error));
+    } else if (msg.type === "result") {
+      if (msg.valueType === "function") resolver.resolve(createProxy(msg.path));
+      else if (msg.valueType === "instance") resolver.resolve(createInstanceProxy(msg.instanceId));
+      else if (msg.valueType === "asynciterator") resolver.resolve({
+        [Symbol.asyncIterator]() { return this; },
+        next: () => sendRequest({ type: "iterate-next", iteratorId: msg.iteratorId }),
+        return: () => sendRequest({ type: "iterate-return", iteratorId: msg.iteratorId })
+      });
+      else if (msg.valueType === "readablestream") resolver.resolve(new ReadableStream({
+        async pull(c) {
+          try { const r = await sendRequest({ type: "stream-read", streamId: msg.streamId }); r.done ? c.close() : c.enqueue(r.value); }
+          catch (e) { c.error(e); }
+        },
+        cancel: () => sendRequest({ type: "stream-cancel", streamId: msg.streamId })
+      }));
+      else resolver.resolve(msg.value);
+    } else if (msg.type === "iterate-result") {
+      resolver.resolve({ value: msg.value, done: msg.done });
+    } else if (msg.type === "stream-result") {
+      resolver.resolve({ value: Array.isArray(msg.value) ? new Uint8Array(msg.value) : msg.value, done: msg.done });
+    }
+  };
+};
+
+setupWs(ws);
 
 const ready = new Promise((resolve, reject) => {
-  ws.onopen = () => {
-    keepaliveInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(stringify({ type: "ping", id: 0 }));
-    }, 30000);
-    resolve();
-  };
-  ws.onerror = reject;
+  ws.addEventListener("open", () => resolve(), { once: true });
+  ws.addEventListener("error", reject, { once: true });
 });
 
-ws.onclose = () => { clearInterval(keepaliveInterval); };
+const reconnect = () => {
+  if (ws.readyState === WebSocket.OPEN) ws.close();
+  ws = new WebSocket(_u.href);
+  setupWs(ws);
+  return new Promise((resolve) => {
+    ws.addEventListener("open", () => resolve(), { once: true });
+  });
+};
 
 const sendRequest = async (msg) => {
   await ready;
@@ -133,37 +189,6 @@ const sendRequest = async (msg) => {
     pending.set(id, { resolve, reject });
     ws.send(stringify({ ...msg, id }));
   });
-};
-
-ws.onmessage = (event) => {
-  const msg = parse(event.data);
-  const resolver = pending.get(msg.id);
-  if (!resolver) return;
-  pending.delete(msg.id);
-
-  if (msg.type === "error") {
-    resolver.reject(new Error(msg.error));
-  } else if (msg.type === "result") {
-    if (msg.valueType === "function") resolver.resolve(createProxy(msg.path));
-    else if (msg.valueType === "instance") resolver.resolve(createInstanceProxy(msg.instanceId));
-    else if (msg.valueType === "asynciterator") resolver.resolve({
-      [Symbol.asyncIterator]() { return this; },
-      next: () => sendRequest({ type: "iterate-next", iteratorId: msg.iteratorId }),
-      return: () => sendRequest({ type: "iterate-return", iteratorId: msg.iteratorId })
-    });
-    else if (msg.valueType === "readablestream") resolver.resolve(new ReadableStream({
-      async pull(c) {
-        try { const r = await sendRequest({ type: "stream-read", streamId: msg.streamId }); r.done ? c.close() : c.enqueue(r.value); }
-        catch (e) { c.error(e); }
-      },
-      cancel: () => sendRequest({ type: "stream-cancel", streamId: msg.streamId })
-    }));
-    else resolver.resolve(msg.value);
-  } else if (msg.type === "iterate-result") {
-    resolver.resolve({ value: msg.value, done: msg.done });
-  } else if (msg.type === "stream-result") {
-    resolver.resolve({ value: Array.isArray(msg.value) ? new Uint8Array(msg.value) : msg.value, done: msg.done });
-  }
 };
 
 const createInstanceProxy = (instanceId, path = []) => new Proxy(function(){}, {
@@ -190,7 +215,158 @@ export const createProxy = (path = []) => new Proxy(function(){}, {
   async apply(_, __, args) { return sendRequest({ type: "call", path, args }); },
   construct(_, args) { return sendRequest({ type: "construct", path, args }); }
 });
+
+// --- Client object (default export) ---
+
+// D1 query builder with template literal support
+const createD1Query = (binding, sql, params) => {
+  const query = {
+    sql,
+    params,
+    then(resolve, reject) {
+      // Default to .all()
+      return sendRequest({ type: "d1", binding, method: "all", sql, params }).then(resolve, reject);
+    },
+    all() {
+      return sendRequest({ type: "d1", binding, method: "all", sql, params });
+    },
+    first(colName) {
+      return sendRequest({ type: "d1", binding, method: "first", sql, params, colName });
+    },
+    run() {
+      return sendRequest({ type: "d1", binding, method: "run", sql, params });
+    },
+    raw() {
+      return sendRequest({ type: "d1", binding, method: "raw", sql, params });
+    }
+  };
+  return query;
+};
+
+// D1 tagged template literal handler
+const createD1Proxy = (binding) => {
+  return (strings, ...values) => {
+    // Build parameterized SQL
+    let sql = strings[0];
+    for (let i = 0; i < values.length; i++) {
+      sql += "?" + strings[i + 1];
+    }
+    return createD1Query(binding, sql, values);
+  };
+};
+
+// R2 bucket proxy
+const createR2Proxy = (binding) => ({
+  get: (key, options) => sendRequest({ type: "r2", binding, method: "get", key, options }),
+  put: (key, value, options) => sendRequest({ type: "r2", binding, method: "put", key, value, options }),
+  delete: (key) => sendRequest({ type: "r2", binding, method: "delete", key }),
+  list: (options) => sendRequest({ type: "r2", binding, method: "list", options }),
+  head: (key) => sendRequest({ type: "r2", binding, method: "head", key }),
+});
+
+// KV namespace proxy
+const createKVProxy = (binding) => ({
+  get: (key, options) => sendRequest({ type: "kv", binding, method: "get", key, options }),
+  put: (key, value, options) => sendRequest({ type: "kv", binding, method: "put", key, value, options }),
+  delete: (key) => sendRequest({ type: "kv", binding, method: "delete", key }),
+  list: (options) => sendRequest({ type: "kv", binding, method: "list", options }),
+  getWithMetadata: (key, options) => sendRequest({ type: "kv", binding, method: "getWithMetadata", key, options }),
+});
+
+// Auth client proxy
+const createAuthProxy = () => {
+  const signIn = {
+    social: async (provider, options) => {
+      const result = await sendRequest({ type: "auth", method: "signIn.social", provider, options });
+      if (result.token) {
+        sessionToken = result.token;
+        await reconnect();
+      }
+      return result;
+    },
+    email: async (email, password, options) => {
+      const result = await sendRequest({ type: "auth", method: "signIn.email", email, password, options });
+      if (result.token) {
+        sessionToken = result.token;
+        await reconnect();
+      }
+      return result;
+    },
+  };
+
+  const signUp = {
+    email: async (email, password, options) => {
+      const result = await sendRequest({ type: "auth", method: "signUp.email", email, password, options });
+      if (result.token) {
+        sessionToken = result.token;
+        await reconnect();
+      }
+      return result;
+    },
+  };
+
+  return {
+    signIn,
+    signUp,
+    signOut: async () => {
+      const result = await sendRequest({ type: "auth", method: "signOut" });
+      sessionToken = null;
+      await reconnect();
+      return result;
+    },
+    getSession: () => sendRequest({ type: "auth", method: "getSession" }),
+    getUser: () => sendRequest({ type: "auth", method: "getUser" }),
+  };
+};
+
+// Build client object based on config
+const d1Bindings = __D1_BINDINGS__;
+const r2Bindings = __R2_BINDINGS__;
+const kvBindings = __KV_BINDINGS__;
+const authEnabled = __AUTH_ENABLED__;
+
+const d1 = {};
+for (const binding of d1Bindings) {
+  d1[binding] = createD1Proxy(binding);
+}
+
+const r2 = {};
+for (const binding of r2Bindings) {
+  r2[binding] = createR2Proxy(binding);
+}
+
+const kv = {};
+for (const binding of kvBindings) {
+  kv[binding] = createKVProxy(binding);
+}
+
+const auth = authEnabled ? createAuthProxy() : null;
+
+export default { d1, r2, kv, auth };
 `;
 
-export const CORE_CODE = CORE_TEMPLATE.replace("__WS_SUFFIX__", "./");
-export const SHARED_CORE_CODE = CORE_TEMPLATE.replace("__WS_SUFFIX__", "./?shared");
+// Generate core code with config
+export const generateCoreCode = (config = {}) => {
+  const { d1 = [], r2 = [], kv = [], auth = false, shared = false } = config;
+  return CORE_TEMPLATE
+    .replace("__WS_SUFFIX__", shared ? "./?shared" : "./")
+    .replace("__D1_BINDINGS__", JSON.stringify(d1))
+    .replace("__R2_BINDINGS__", JSON.stringify(r2))
+    .replace("__KV_BINDINGS__", JSON.stringify(kv))
+    .replace("__AUTH_ENABLED__", String(!!auth));
+};
+
+// Legacy exports for backward compatibility
+export const CORE_CODE = CORE_TEMPLATE
+  .replace("__WS_SUFFIX__", "./")
+  .replace("__D1_BINDINGS__", "[]")
+  .replace("__R2_BINDINGS__", "[]")
+  .replace("__KV_BINDINGS__", "[]")
+  .replace("__AUTH_ENABLED__", "false");
+
+export const SHARED_CORE_CODE = CORE_TEMPLATE
+  .replace("__WS_SUFFIX__", "./?shared")
+  .replace("__D1_BINDINGS__", "[]")
+  .replace("__R2_BINDINGS__", "[]")
+  .replace("__KV_BINDINGS__", "[]")
+  .replace("__AUTH_ENABLED__", "false");

@@ -35,6 +35,32 @@ if (!exportsEntry) {
 // Optional: static assets directory
 const assetsDir = pkg.main || null;
 
+// Optional: export configuration (d1, r2, kv, auth)
+const exportConfig = pkg.export || {};
+const d1Bindings = exportConfig.d1 || [];
+const r2Bindings = exportConfig.r2 || [];
+const kvBindings = exportConfig.kv || [];
+const authConfig = exportConfig.auth || null;
+
+// Auth requires a D1 database for better-auth
+const allD1Bindings = [...d1Bindings];
+if (authConfig && !allD1Bindings.includes("AUTH_DB")) {
+  allD1Bindings.unshift("AUTH_DB");
+}
+
+// Validate binding names
+const validateBindings = (bindings, type) => {
+  for (const name of bindings) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+      console.error(`Invalid ${type} binding name: "${name}". Use UPPER_SNAKE_CASE.`);
+      process.exit(1);
+    }
+  }
+};
+validateBindings(d1Bindings, "D1");
+validateBindings(r2Bindings, "R2");
+validateBindings(kvBindings, "KV");
+
 // --- Resolve source directory from exports field ---
 
 const exportsPath = path.resolve(cwd, exportsEntry.replace(/^\.\//, ""));
@@ -260,7 +286,17 @@ for (const mod of modules) {
 // --- Minify core modules ---
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const { CORE_CODE, SHARED_CORE_CODE } = await import(path.join(__dirname, "..", "client.js"));
+const { generateCoreCode } = await import(path.join(__dirname, "..", "client.js"));
+
+// Generate core code with export config
+const coreConfig = {
+  d1: allD1Bindings,
+  r2: r2Bindings,
+  kv: kvBindings,
+  auth: !!authConfig,
+};
+const CORE_CODE = generateCoreCode(coreConfig);
+const SHARED_CORE_CODE = generateCoreCode({ ...coreConfig, shared: true });
 
 const minified = minifySync("_core.js", CORE_CODE);
 if (minified.errors?.length) console.error("Minification errors (core):", minified.errors);
@@ -378,12 +414,59 @@ wranglerLines.push(
   `tag = "v1"`,
   `new_classes = ["SharedExportDO"]`,
   ``,
+);
+
+// Add D1 bindings
+if (allD1Bindings.length > 0) {
+  for (const name of allD1Bindings) {
+    wranglerLines.push(`[[d1_databases]]`);
+    wranglerLines.push(`binding = "${name}"`);
+    wranglerLines.push(`database_name = "${workerName}-${name.toLowerCase().replace(/_/g, "-")}"`);
+    wranglerLines.push(`database_id = "" # Run: wrangler d1 create ${workerName}-${name.toLowerCase().replace(/_/g, "-")}`);
+    wranglerLines.push(``);
+  }
+}
+
+// Add R2 bindings
+if (r2Bindings.length > 0) {
+  for (const name of r2Bindings) {
+    wranglerLines.push(`[[r2_buckets]]`);
+    wranglerLines.push(`binding = "${name}"`);
+    wranglerLines.push(`bucket_name = "${workerName}-${name.toLowerCase().replace(/_/g, "-")}"`);
+    wranglerLines.push(``);
+  }
+}
+
+// Add KV bindings
+if (kvBindings.length > 0) {
+  for (const name of kvBindings) {
+    wranglerLines.push(`[[kv_namespaces]]`);
+    wranglerLines.push(`binding = "${name}"`);
+    wranglerLines.push(`id = "" # Run: wrangler kv namespace create ${name}`);
+    wranglerLines.push(``);
+  }
+}
+
+// Add alias
+wranglerLines.push(
   `[alias]`,
   `"__USER_MODULE__" = "./.export-module-map.js"`,
   `"__GENERATED_TYPES__" = "./.export-types.js"`,
   `"__SHARED_MODULE__" = "./.export-shared.js"`,
+  `"__EXPORT_CONFIG__" = "./.export-config.js"`,
   ``,
 );
+
+// --- Write .export-config.js ---
+
+const configPath = path.join(cwd, ".export-config.js");
+const configContent = `// Auto-generated export configuration
+export const d1Bindings = ${JSON.stringify(allD1Bindings)};
+export const r2Bindings = ${JSON.stringify(r2Bindings)};
+export const kvBindings = ${JSON.stringify(kvBindings)};
+export const authConfig = ${JSON.stringify(authConfig)};
+`;
+fs.writeFileSync(configPath, configContent);
 
 const wranglerPath = path.join(cwd, "wrangler.toml");
 fs.writeFileSync(wranglerPath, wranglerLines.join("\n"));

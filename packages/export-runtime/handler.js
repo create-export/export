@@ -1,5 +1,5 @@
 import { stringify, parse } from "devalue";
-import { CORE_CODE, SHARED_CORE_CODE } from "./client.js";
+import { generateCoreCode, CORE_CODE, SHARED_CORE_CODE } from "./client.js";
 import { createRpcDispatcher } from "./rpc.js";
 
 const JS = "application/javascript; charset=utf-8";
@@ -13,7 +13,7 @@ const jsResponse = (body, extra = {}) =>
 const tsResponse = (body, status = 200) =>
   new Response(body, { status, headers: { "Content-Type": TS, ...CORS, "Cache-Control": "no-cache" } });
 
-export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, minifiedSharedCore) => {
+export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, minifiedSharedCore, exportConfig = {}) => {
   // moduleMap: { routePath: moduleNamespace, ... }
   const moduleRoutes = Object.keys(moduleMap); // e.g. ["", "greet", "utils/math"]
   const moduleExportKeys = {};
@@ -26,8 +26,14 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
     moduleExportKeys[route] = keys.filter(k => k !== "default");
   }
 
-  const coreModuleCode = minifiedCore || CORE_CODE;
-  const sharedCoreModuleCode = minifiedSharedCore || SHARED_CORE_CODE;
+  // Export configuration
+  const { d1Bindings = [], r2Bindings = [], kvBindings = [], authConfig = null } = exportConfig;
+  const hasClient = d1Bindings.length > 0 || r2Bindings.length > 0 || kvBindings.length > 0 || authConfig;
+
+  // Generate core code with config
+  const coreConfig = { d1: d1Bindings, r2: r2Bindings, kv: kvBindings, auth: !!authConfig };
+  const coreModuleCode = minifiedCore || generateCoreCode(coreConfig);
+  const sharedCoreModuleCode = minifiedSharedCore || generateCoreCode({ ...coreConfig, shared: true });
   const corePath = `/${coreId || crypto.randomUUID()}.js`;
   const sharedCorePath = corePath.replace(".js", "-shared.js");
 
@@ -63,7 +69,9 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
     const namedExports = keys
       .map((key) => `export const ${key} = createProxy([${JSON.stringify(route)}, ${JSON.stringify(key)}]);`)
       .join("\n");
-    return `import { createProxy } from ".${cpath}";\n${namedExports}`;
+    // Include default export (client) if configured
+    const defaultExport = hasClient ? `\nexport { default } from ".${cpath}";` : "";
+    return `import { createProxy } from ".${cpath}";\n${namedExports}${defaultExport}`;
   };
 
   const buildExportModule = (cpath, route, name) =>
@@ -71,7 +79,116 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
     `const _export = createProxy([${JSON.stringify(route)}, ${JSON.stringify(name)}]);\n` +
     `export default _export;\nexport { _export as ${name} };`;
 
-  const dispatchMessage = async (dispatcher, msg) => {
+  // D1 request handler
+  const handleD1Request = async (env, msg) => {
+    const { binding, method, sql, params = [], colName } = msg;
+    const db = env[binding];
+    if (!db) throw new Error(`D1 binding not found: ${binding}`);
+
+    const stmt = db.prepare(sql).bind(...params);
+    switch (method) {
+      case "all": return { type: "result", value: await stmt.all() };
+      case "first": return { type: "result", value: await stmt.first(colName) };
+      case "run": return { type: "result", value: await stmt.run() };
+      case "raw": return { type: "result", value: await stmt.raw() };
+      default: throw new Error(`Unknown D1 method: ${method}`);
+    }
+  };
+
+  // R2 request handler
+  const handleR2Request = async (env, msg) => {
+    const { binding, method, key, value, options } = msg;
+    const bucket = env[binding];
+    if (!bucket) throw new Error(`R2 binding not found: ${binding}`);
+
+    switch (method) {
+      case "get": {
+        const obj = await bucket.get(key, options);
+        if (!obj) return { type: "result", value: null };
+        // Return object metadata and body as ArrayBuffer
+        const body = await obj.arrayBuffer();
+        return {
+          type: "result",
+          value: {
+            body: new Uint8Array(body),
+            key: obj.key,
+            version: obj.version,
+            size: obj.size,
+            etag: obj.etag,
+            httpEtag: obj.httpEtag,
+            httpMetadata: obj.httpMetadata,
+            customMetadata: obj.customMetadata,
+          }
+        };
+      }
+      case "put": {
+        const result = await bucket.put(key, value, options);
+        return { type: "result", value: result };
+      }
+      case "delete": {
+        await bucket.delete(key);
+        return { type: "result", value: true };
+      }
+      case "list": {
+        const result = await bucket.list(options);
+        return { type: "result", value: result };
+      }
+      case "head": {
+        const obj = await bucket.head(key);
+        return { type: "result", value: obj };
+      }
+      default: throw new Error(`Unknown R2 method: ${method}`);
+    }
+  };
+
+  // KV request handler
+  const handleKVRequest = async (env, msg) => {
+    const { binding, method, key, value, options } = msg;
+    const kv = env[binding];
+    if (!kv) throw new Error(`KV binding not found: ${binding}`);
+
+    switch (method) {
+      case "get": return { type: "result", value: await kv.get(key, options) };
+      case "put": {
+        await kv.put(key, value, options);
+        return { type: "result", value: true };
+      }
+      case "delete": {
+        await kv.delete(key);
+        return { type: "result", value: true };
+      }
+      case "list": return { type: "result", value: await kv.list(options) };
+      case "getWithMetadata": return { type: "result", value: await kv.getWithMetadata(key, options) };
+      default: throw new Error(`Unknown KV method: ${method}`);
+    }
+  };
+
+  // Auth request handler (placeholder - will be integrated with better-auth)
+  const handleAuthRequest = async (env, msg, sessionStore) => {
+    const { method, provider, email, password, options } = msg;
+
+    // TODO: Integrate with better-auth
+    // For now, return placeholder responses
+    switch (method) {
+      case "signIn.social":
+        // Will redirect to OAuth provider
+        return { type: "result", value: { error: "Auth not configured. Run: npm run auth:add " + provider } };
+      case "signIn.email":
+        return { type: "result", value: { error: "Auth not configured" } };
+      case "signUp.email":
+        return { type: "result", value: { error: "Auth not configured" } };
+      case "signOut":
+        return { type: "result", value: { success: true } };
+      case "getSession":
+        return { type: "result", value: null };
+      case "getUser":
+        return { type: "result", value: null };
+      default:
+        throw new Error(`Unknown auth method: ${method}`);
+    }
+  };
+
+  const dispatchMessage = async (dispatcher, msg, env) => {
     const { type, path = [], args = [], instanceId, iteratorId, streamId } = msg;
     switch (type) {
       case "ping": return { type: "pong" };
@@ -87,16 +204,21 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       case "iterate-return": return dispatcher.rpcIterateReturn(iteratorId);
       case "stream-read": return dispatcher.rpcStreamRead(streamId);
       case "stream-cancel": return dispatcher.rpcStreamCancel(streamId);
+      // Client requests
+      case "d1": return handleD1Request(env, msg);
+      case "r2": return handleR2Request(env, msg);
+      case "kv": return handleKVRequest(env, msg);
+      case "auth": return handleAuthRequest(env, msg);
     }
   };
 
-  const wireWebSocket = (server, dispatcher, onClose) => {
+  const wireWebSocket = (server, dispatcher, env, onClose) => {
     server.addEventListener("message", async (event) => {
       let id;
       try {
         const msg = parse(event.data);
         id = msg.id;
-        const result = await dispatchMessage(dispatcher, msg);
+        const result = await dispatchMessage(dispatcher, msg, env);
         if (result) server.send(stringify({ ...result, id }));
       } catch (err) {
         if (id !== undefined) server.send(stringify({ type: "error", id, error: String(err) }));
@@ -119,10 +241,10 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
         if (isShared && env?.SHARED_EXPORT) {
           const room = url.searchParams.get("room") || "default";
           const stub = env.SHARED_EXPORT.get(env.SHARED_EXPORT.idFromName(room));
-          wireWebSocket(server, stub);
+          wireWebSocket(server, stub, env);
         } else {
           const dispatcher = createRpcDispatcher(moduleMap);
-          wireWebSocket(server, dispatcher, () => dispatcher.clearAll());
+          wireWebSocket(server, dispatcher, env, () => dispatcher.clearAll());
         }
 
         return new Response(null, { status: 101, webSocket: client });

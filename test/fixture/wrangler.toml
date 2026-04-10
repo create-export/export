@@ -21,3 +21,4 @@ new_classes = ["SharedExportDO"]
 "__USER_MODULE__" = "./.export-module-map.js"
 "__GENERATED_TYPES__" = "./.export-types.js"
 "__SHARED_MODULE__" = "./.export-shared.js"
+"__EXPORT_CONFIG__" = "./.export-config.js"
