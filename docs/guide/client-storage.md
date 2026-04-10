@@ -238,8 +238,8 @@ For production, set these secrets in your Cloudflare dashboard:
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`
 
 OAuth callback URLs:
-- `https://your-worker.workers.dev/api/auth/callback/google`
-- `https://your-worker.workers.dev/api/auth/callback/github`
+- `https://your-worker.workers.dev/_auth/callback/google`
+- `https://your-worker.workers.dev/_auth/callback/github`
 
 ### Database Setup
 

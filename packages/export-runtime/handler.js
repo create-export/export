@@ -194,13 +194,13 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       case "signIn.social": {
         // Return the OAuth URL for client to redirect to
         const callbackUrl = options?.callbackUrl || "/";
-        const authUrl = `${baseUrl}/api/auth/signin/${provider}?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+        const authUrl = `${baseUrl}/_auth/signin/${provider}?callbackUrl=${encodeURIComponent(callbackUrl)}`;
         return { type: "result", value: { redirectUrl: authUrl } };
       }
       case "signIn.email": {
         // Forward to better-auth via internal fetch
         try {
-          const response = await fetch(`${baseUrl}/api/auth/signin/email`, {
+          const response = await fetch(`${baseUrl}/_auth/signin/email`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password }),
@@ -216,7 +216,7 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       }
       case "signUp.email": {
         try {
-          const response = await fetch(`${baseUrl}/api/auth/signup/email`, {
+          const response = await fetch(`${baseUrl}/_auth/signup/email`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ email, password, name }),
@@ -234,7 +234,7 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
         // Clear session via better-auth
         if (wsSession?.token) {
           try {
-            await fetch(`${baseUrl}/api/auth/signout`, {
+            await fetch(`${baseUrl}/_auth/signout`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -354,7 +354,8 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       const pathname = url.pathname;
 
       // Auth routes (handled by better-auth)
-      if (authConfig && pathname.startsWith("/api/auth/")) {
+      // Using /_auth/ to avoid collision with user routes (src/_auth/ is ignored)
+      if (authConfig && pathname.startsWith("/_auth/")) {
         return handleAuthRoute(request, env, authConfig);
       }
 
