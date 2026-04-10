@@ -210,24 +210,32 @@ if (auth.isAuthenticated) {
 
 ### OAuth Setup
 
-Add providers using the CLI:
+Use the built-in CLI to configure OAuth providers:
 
 ```bash
-npm create export auth add google <clientId>:<clientSecret>
-npm create export auth add github <clientId>:<clientSecret>
-npm create export auth list
-npm create export auth remove google
+# Add Google OAuth
+npm run auth:add -- google YOUR_CLIENT_ID:YOUR_CLIENT_SECRET
+
+# Add GitHub OAuth
+npm run auth:add -- github YOUR_CLIENT_ID:YOUR_CLIENT_SECRET
+
+# List configured providers
+npm run auth:list
+
+# Remove a provider
+npm run auth:remove -- google
 ```
 
-For social login, set environment variables in your Cloudflare dashboard:
+This automatically:
+- Enables auth in `package.json`
+- Saves credentials to `.dev.vars` (local development)
+- Adds `.dev.vars` to `.gitignore`
+- Generates `BETTER_AUTH_SECRET`
 
-```
-BETTER_AUTH_SECRET=your-secret-key
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GITHUB_CLIENT_ID=your-github-client-id
-GITHUB_CLIENT_SECRET=your-github-client-secret
-```
+For production, set these secrets in your Cloudflare dashboard:
+- `BETTER_AUTH_SECRET`
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`
 
 OAuth callback URLs:
 - `https://your-worker.workers.dev/api/auth/callback/google`

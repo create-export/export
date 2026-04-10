@@ -32,7 +32,8 @@
     "rpc.js",
     "shared-do.js",
     "auth.js",
-    "bin/generate-types.mjs"
+    "bin/generate-types.mjs",
+    "bin/auth.mjs"
   ],
   "dependencies": {
     "better-auth": "^1.2.0",
