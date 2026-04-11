@@ -215,7 +215,7 @@ import { Counter } from "./.export-shared.js";
 await counter.increment();  // Direct DO call, no devalue, no WebSocket
 ```
 
-Rooms are `"default"` unless specified via `?shared&room=lobby`.
+Rooms are `"default"` unless specified via `?shared=lobby`.
 
 ## Streaming
 

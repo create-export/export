@@ -339,7 +339,8 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
         server.accept();
 
         if (isShared && env?.SHARED_EXPORT) {
-          const room = url.searchParams.get("room") || "default";
+          // ?shared or ?shared= uses default room, ?shared=<id> uses specified room
+          const room = url.searchParams.get("shared") || "default";
           const stub = env.SHARED_EXPORT.get(env.SHARED_EXPORT.idFromName(room));
           wireWebSocket(server, stub, env);
         } else {

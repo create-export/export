@@ -43,11 +43,11 @@ The `.export-shared.js` module is generated at build time. It uses `import { env
 
 ## Rooms
 
-By default, all shared clients connect to a single room called `"default"`. You can specify a room name to create isolated shared instances:
+By default, all shared clients connect to a single room called `"default"`. You can specify a room ID to create isolated shared instances:
 
 ```javascript
-import { Counter } from "https://my-worker.workers.dev/?shared&room=lobby";
-import { Counter } from "https://my-worker.workers.dev/?shared&room=game-1";
+import { Counter } from "https://my-worker.workers.dev/?shared=lobby";
+import { Counter } from "https://my-worker.workers.dev/?shared=game-1";
 // These are separate Durable Object instances
 ```
 
