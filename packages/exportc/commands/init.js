@@ -212,22 +212,34 @@ declare module "export/" {
       fs.writeFileSync(envDtsPath, envDtsContent);
     }
 
-    // Update tsconfig
+    // Update tsconfig to include export-env.d.ts
+    // Use string replacement to preserve comments in tsconfig files
     const tsconfigAppPath = path.join(cwd, "tsconfig.app.json");
     const tsconfigPath = path.join(cwd, "tsconfig.json");
     const targetTsconfig = fs.existsSync(tsconfigAppPath) ? tsconfigAppPath : tsconfigPath;
 
     if (fs.existsSync(targetTsconfig)) {
       try {
-        const tsconfigContent = fs.readFileSync(targetTsconfig, "utf8");
-        const tsconfig = JSON.parse(tsconfigContent);
-        tsconfig.include = tsconfig.include || [];
-        if (!tsconfig.include.includes("export-env.d.ts")) {
-          tsconfig.include.push("export-env.d.ts");
-          fs.writeFileSync(targetTsconfig, JSON.stringify(tsconfig, null, 2) + "\n");
+        let tsconfigContent = fs.readFileSync(targetTsconfig, "utf8");
+        if (!tsconfigContent.includes("export-env.d.ts")) {
+          // Add export-env.d.ts to include array using string replacement
+          if (tsconfigContent.includes('"include"')) {
+            // Add to existing include array
+            tsconfigContent = tsconfigContent.replace(
+              /"include"\s*:\s*\[/,
+              '"include": ["export-env.d.ts", '
+            );
+          } else {
+            // Add include array before closing brace
+            tsconfigContent = tsconfigContent.replace(
+              /\}(\s*)$/,
+              ',\n  "include": ["export-env.d.ts"]\n}$1'
+            );
+          }
+          fs.writeFileSync(targetTsconfig, tsconfigContent);
         }
       } catch {
-        // Ignore JSON parse errors
+        // Ignore errors
       }
     }
   }
