@@ -393,6 +393,7 @@ const wranglerLines = [
   `name = "${workerName}"`,
   `main = "node_modules/export-runtime/entry.js"`,
   `compatibility_date = "2024-11-01"`,
+  `compatibility_flags = ["nodejs_compat"]`,
   ``,
 ];
 
