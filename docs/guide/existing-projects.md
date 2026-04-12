@@ -12,14 +12,11 @@ Use `exportc` to add export to your existing Vite project. One command sets up e
 # In your existing Vite project
 npx exportc init
 
-# Start Vite development
+# Start development (Vite + Wrangler auto-start)
 npm run dev
 
-# Start export worker (in another terminal)
-npm run export:dev
-
-# Build and deploy
-npm run export:deploy
+# Build and deploy to Workers Sites
+npm run export
 ```
 
 That's it. Dependencies are installed automatically, just like shadcn.
@@ -187,16 +184,16 @@ export default defineConfig({
 
 ## Deploy
 
-Deploy your entire app (Vite frontend + server exports) to Cloudflare Workers:
+Deploy your entire app (Vite frontend + server exports) to Cloudflare Workers Sites:
 
 ```bash
-npm run export:deploy
+npm run export
 ```
 
 This command:
 1. Builds your Vite app (`vite build`)
 2. Generates types and wrangler.toml from `cloudflare` config
-3. Deploys static assets + server exports to Workers
+3. Deploys static assets + server exports to Workers Sites
 4. Your app is now live at your configured production URL
 
 The production URL must be set in your Vite config:
@@ -211,9 +208,8 @@ exportPlugin({
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start Vite development server |
-| `npm run export:dev` | Start export worker dev server |
-| `npm run export:deploy` | Build Vite app and deploy to Workers |
+| `npm run dev` | Start Vite + Wrangler together (auto-generates types) |
+| `npm run export` | Build Vite app and deploy to Workers Sites |
 | `exportc init` | Initialize export in your project |
 | `exportc dev` | Start Wrangler dev server standalone |
 | `exportc deploy` | Deploy exports only (without Vite build) |

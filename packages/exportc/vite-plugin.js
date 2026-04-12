@@ -110,18 +110,18 @@ export function exportPlugin(options = {}) {
     }
 
     return new Promise((resolveReady) => {
-      console.log(`[exportc] Starting Wrangler dev server...`);
+      console.log(`[exportc] Generating types and starting Wrangler...`);
 
-      // Generate types first, then start wrangler
-      const generateTypes = spawn("npm", ["run", "dev"], {
+      // Run generate-export-types first, then start wrangler dev
+      const wrangler = spawn("npx", ["generate-export-types", "&&", "npx", "wrangler", "dev", "--port", String(devPort)], {
         cwd: exportPath,
         stdio: ["ignore", "pipe", "pipe"],
         shell: true,
       });
 
-      wranglerProcess = generateTypes;
+      wranglerProcess = wrangler;
 
-      generateTypes.stdout.on("data", (data) => {
+      wrangler.stdout.on("data", (data) => {
         const output = data.toString();
         process.stdout.write(`[export] ${output}`);
 
@@ -135,7 +135,7 @@ export function exportPlugin(options = {}) {
         }
       });
 
-      generateTypes.stderr.on("data", (data) => {
+      wrangler.stderr.on("data", (data) => {
         const output = data.toString();
         // Filter out noisy warnings
         if (!output.includes("ExperimentalWarning")) {
@@ -151,12 +151,12 @@ export function exportPlugin(options = {}) {
         }
       });
 
-      generateTypes.on("error", (err) => {
+      wrangler.on("error", (err) => {
         console.error(`[exportc] Failed to start Wrangler:`, err.message);
         resolveReady();
       });
 
-      generateTypes.on("close", (code) => {
+      wrangler.on("close", (code) => {
         if (code !== 0 && code !== null) {
           console.error(`[exportc] Wrangler exited with code ${code}`);
         }

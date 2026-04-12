@@ -38,6 +38,7 @@ export function createRpcDispatcher(moduleMap) {
   const iterators = new Map();
   const streams = new Map();
   let nextId = 1;
+  let closed = false;
 
   const requireInstance = (id) => {
     const inst = instances.get(id);
@@ -115,9 +116,11 @@ export function createRpcDispatcher(moduleMap) {
     },
 
     async rpcIterateNext(iteratorId) {
+      if (closed) throw new Error("Connection closed");
       const iter = iterators.get(iteratorId);
       if (!iter) throw new Error("Iterator not found");
       const { value, done } = await iter.next();
+      if (closed) throw new Error("Connection closed");
       if (done) iterators.delete(iteratorId);
       return { type: "iterate-result", value, done: !!done };
     },
@@ -130,10 +133,12 @@ export function createRpcDispatcher(moduleMap) {
     },
 
     async rpcStreamRead(streamId) {
+      if (closed) throw new Error("Connection closed");
       const entry = streams.get(streamId);
       if (!entry) throw new Error("Stream not found");
       if (!entry.reader) entry.reader = entry.stream.getReader();
       const { value, done } = await entry.reader.read();
+      if (closed) throw new Error("Connection closed");
       if (done) streams.delete(streamId);
       const v = value instanceof Uint8Array ? Array.from(value) : value;
       return { type: "stream-result", value: v, done: !!done };
@@ -149,9 +154,21 @@ export function createRpcDispatcher(moduleMap) {
     },
 
     clearAll() {
+      closed = true;
+      // Synchronously clear all maps to prevent further access
+      const iters = [...iterators.values()];
+      const strms = [...streams.values()];
       instances.clear();
       iterators.clear();
       streams.clear();
+
+      // Cancel iterators and streams without awaiting (fire and forget)
+      for (const iter of iters) {
+        try { iter?.return?.(); } catch {}
+      }
+      for (const entry of strms) {
+        try { (entry.reader || entry.stream)?.cancel?.(); } catch {}
+      }
     },
   };
 }

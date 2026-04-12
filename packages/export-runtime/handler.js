@@ -334,46 +334,70 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
       }
     };
 
-    server.addEventListener("message", async (event) => {
+    const handleClose = () => {
       if (isClosed) return;
-      let id;
-      try {
-        const msg = parse(event.data);
-        id = msg.id;
+      isClosed = true;
+      if (onClose) {
+        try { onClose(); } catch {}
+      }
+    };
 
-        // Handle auth token updates (on reconnect or explicit setToken)
+    server.addEventListener("message", (event) => {
+      // Wrap entire handler in try-catch to prevent any unhandled errors
+      try {
+        if (isClosed) return;
+
+        // Parse message synchronously to get the id
+        let msg;
+        let id;
+        try {
+          msg = parse(event.data);
+          id = msg.id;
+        } catch {
+          return;
+        }
+
+        // Handle ping synchronously - no async needed
+        if (msg.type === "ping") {
+          safeSend(stringify({ type: "pong", id }));
+          return;
+        }
+
+        // Handle auth token updates synchronously
         if (msg.type === "auth" && msg.token && !msg.method) {
-          // Direct token send on reconnect - just update session
           wsSession.token = msg.token;
           safeSend(stringify({ type: "auth-result", id, success: true }));
           return;
         }
 
-        const result = await dispatchMessage(dispatcher, msg, env, wsSession);
+        // Handle other messages asynchronously with full error protection
+        (async () => {
+          try {
+            if (isClosed) return;
+            const result = await dispatchMessage(dispatcher, msg, env, wsSession);
+            if (isClosed) return;
 
-        // Extract token from auth responses
-        if (result?.value?.token && msg.type === "auth") {
-          wsSession.token = result.value.token;
-        }
+            // Extract token from auth responses
+            if (result?.value?.token && msg.type === "auth") {
+              wsSession.token = result.value.token;
+            }
 
-        if (result) safeSend(stringify({ ...result, id }));
-      } catch (err) {
-        if (id !== undefined) safeSend(stringify({ type: "error", id, error: String(err) }));
+            if (result) safeSend(stringify({ ...result, id }));
+          } catch {
+            // Silently ignore all errors - connection may be closing
+          }
+        })().catch(() => {});  // Double-catch to ensure no unhandled promise rejection
+      } catch {
+        // Silently ignore outer errors too
       }
     });
 
-    server.addEventListener("close", () => {
-      isClosed = true;
-      if (onClose) onClose();
-    });
-
-    server.addEventListener("error", () => {
-      isClosed = true;
-    });
+    server.addEventListener("close", handleClose);
+    server.addEventListener("error", handleClose);
   };
 
   return {
-    async fetch(request, env) {
+    async fetch(request, env, ctx) {
       const url = new URL(request.url);
       const isShared = url.searchParams.has("shared");
       const origin = request.headers.get("Origin");
@@ -396,6 +420,7 @@ export const createHandler = (moduleMap, generatedTypes, minifiedCore, coreId, m
 
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
+
         server.accept();
 
         if (isShared && env?.SHARED_EXPORT) {

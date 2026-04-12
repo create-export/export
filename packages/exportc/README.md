@@ -8,14 +8,11 @@ Add [export](https://github.com/ihasq/export) to existing Vite projects. One com
 # In your existing Vite project
 npx exportc init
 
-# Start Vite development
+# Start development (Vite + Wrangler auto-start)
 npm run dev
 
-# Start export worker (in another terminal)
-npm run export:dev
-
-# Build and deploy to Cloudflare Workers
-npm run export:deploy
+# Build and deploy to Workers Sites
+npm run export
 ```
 
 That's it. Dependencies are installed automatically.
@@ -45,9 +42,8 @@ await counter.increment();  // 1
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start Vite development server |
-| `npm run export:dev` | Start export worker dev server |
-| `npm run export:deploy` | Build Vite app and deploy to Workers |
+| `npm run dev` | Start Vite + Wrangler together (auto-generates types) |
+| `npm run export` | Build Vite app and deploy to Workers Sites |
 | `exportc init` | Initialize export in your project |
 | `exportc dev` | Start Wrangler dev server standalone |
 | `exportc deploy` | Deploy exports only |
@@ -80,11 +76,11 @@ The `production` option is required for production builds -- it specifies the de
 4. Watches for changes and regenerates types automatically
 5. Transforms `export/` imports to `http://localhost:8787`
 
-### Production (`npm run export:deploy`)
+### Production (`npm run export`)
 
 1. Builds your Vite app with `vite build`
 2. Generates types and wrangler.toml from `cloudflare` config
-3. Deploys to Workers (static assets + server exports)
+3. Deploys to Workers Sites (static assets + server exports)
 4. `export/` imports resolve to the configured `production` URL
 
 ## Project Structure

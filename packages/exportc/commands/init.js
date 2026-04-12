@@ -113,11 +113,10 @@ export class Counter {
 
   // Update main package.json with cloudflare configuration
   pkg.scripts = pkg.scripts || {};
-  if (!pkg.scripts["export:dev"]) {
-    pkg.scripts["export:dev"] = "cd export && generate-export-types && wrangler dev";
-  }
-  if (!pkg.scripts["export:deploy"]) {
-    pkg.scripts["export:deploy"] = "vite build && cd export && generate-export-types && wrangler deploy";
+  // npm run dev - Vite plugin auto-starts wrangler
+  // npm run export - Build and deploy to Workers Sites
+  if (!pkg.scripts["export"]) {
+    pkg.scripts["export"] = "vite build && cd export && generate-export-types && wrangler deploy";
   }
 
   pkg.devDependencies = pkg.devDependencies || {};
@@ -276,8 +275,8 @@ declare module "export/" {
 
   // Done
   console.log();
-  console.log(pc.green("Done!") + " Run " + pc.cyan("npm run dev") + " to start your Vite app.");
-  console.log("         Run " + pc.cyan("npm run export:dev") + " to start the export worker.");
+  console.log(pc.green("Done!") + " Run " + pc.cyan("npm run dev") + " to start development.");
+  console.log("         Run " + pc.cyan("npm run export") + " to deploy to Workers Sites.");
   console.log();
   console.log(pc.gray("  import { hello } from \"export/\";"));
   console.log(pc.gray("  await hello(\"World\");"));
